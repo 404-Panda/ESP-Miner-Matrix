@@ -1,3 +1,4 @@
+// main/http_server/axe-os/src/app/app.module.ts
 import 'chartjs-adapter-moment';
 
 import { CommonModule, HashLocationStrategy, LocationStrategy } from '@angular/common';
@@ -7,6 +8,7 @@ import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { BrowserModule } from '@angular/platform-browser';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { ToastrModule } from 'ngx-toastr';
+import { ChartModule } from 'primeng/chart';
 
 import { AppRoutingModule } from './app-routing.module';
 import { AppComponent } from './app.component';
@@ -26,6 +28,8 @@ import { HashSuffixPipe } from './pipes/hash-suffix.pipe';
 import { PrimeNGModule } from './prime-ng.module';
 import { MessageModule } from 'primeng/message';
 import { TooltipModule } from 'primeng/tooltip';
+import { MiningMatrixComponent } from './components/mining-matrix/mining-matrix.component';
+import { PersistenceService } from './persistence.service';
 
 const components = [
   AppComponent,
@@ -41,13 +45,13 @@ const components = [
 @NgModule({
   declarations: [
     ...components,
-
     ANSIPipe,
     DateAgoPipe,
     SwarmComponent,
     SettingsComponent,
     HashSuffixPipe,
-    ThemeConfigComponent
+    ThemeConfigComponent,
+    MiningMatrixComponent
   ],
   imports: [
     BrowserModule,
@@ -63,10 +67,12 @@ const components = [
     PrimeNGModule,
     AppLayoutModule,
     MessageModule,
-    TooltipModule
+    TooltipModule,
+    ChartModule
   ],
   providers: [
     { provide: LocationStrategy, useClass: HashLocationStrategy },
+    PersistenceService
   ],
   bootstrap: [AppComponent]
 })
