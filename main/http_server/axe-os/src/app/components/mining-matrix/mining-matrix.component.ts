@@ -77,7 +77,9 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   constructor(private persistenceService: PersistenceService) {}
 
   ngOnInit(): void {
-    this.coreMap = this.persistenceService.loadCoreMap();
+    // Clear coreMap on initial load to ensure a fresh start
+    this.persistenceService.clearCoreMap();
+    this.coreMap = this.persistenceService.loadCoreMap(); // Will be empty after clear
     this.updateTopCores();
     this.recalculateBestCore();
 
@@ -93,15 +95,26 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
 
     this.ws.onopen = () => {
       console.log('WebSocket connected');
+      // Clear coreMap when WebSocket connects (indicating device is back online after reboot)
+      this.persistenceService.clearCoreMap();
+      this.coreMap = {};
+      this.bestCoreId = null;
+      this.bestDiff = 0;
+      this.topCores = [];
+      this.shareScatter = [];
+      this.chartData.datasets[0].data = this.shareScatter; // Update chart
     };
+
     this.ws.onmessage = (event) => {
       const text = event.data as string;
       console.log('WebSocket message:', text);
       this.handleIncomingLog(text);
     };
+
     this.ws.onerror = (error) => {
       console.error('WebSocket error:', error);
     };
+
     this.ws.onclose = () => {
       console.log('WebSocket closed');
     };
