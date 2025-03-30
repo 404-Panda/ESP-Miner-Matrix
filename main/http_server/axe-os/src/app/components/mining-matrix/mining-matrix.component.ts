@@ -1,4 +1,3 @@
-// main/http_server/axe-os/src/app/components/mining-matrix/mining-matrix.component.ts
 import { Component, OnDestroy, OnInit, ElementRef, ViewChild } from '@angular/core';
 import { PersistenceService } from '../../persistence.service';
 
@@ -36,11 +35,26 @@ interface MiningTask {
   jobId: string;
   coreId: string;
   version: string;
-  midstate: string;
-  header: string;
+  prevBlockHash?: string;
+  coinbase?: string;
+  ntime?: string;
+  target?: string;
   nonce: string;
   difficulty: number;
   timestamp: number;
+  username?: string;
+  extranonce2?: string;
+}
+
+interface MiningNotify {
+  jobId: string;
+  prevBlockHash: string;
+  coinbase1: string;
+  coinbase2: string;
+  merkleBranches: string[];
+  version: string;
+  target: string;
+  ntime: string;
 }
 
 @Component({
@@ -61,6 +75,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   
   public miningTasks: MiningTask[] = [];
   private lastJob: { jobId: string; version: string; coreId: string } | null = null;
+  private lastNotify: MiningNotify | null = null;
 
   public totalCores = 896;
   public gridSize = Math.ceil(Math.sqrt(this.totalCores));
@@ -77,7 +92,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   constructor(private persistenceService: PersistenceService) {}
 
   ngOnInit(): void {
-    // Load persisted coreMap on init (persists across refresh)
     this.coreMap = this.persistenceService.loadCoreMap();
     this.updateTopCores();
     this.recalculateBestCore();
@@ -94,12 +108,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
 
     this.ws.onopen = () => {
       console.log('WebSocket connected');
-      // Do NOT clear coreMap here; let it persist across refreshes
     };
 
     this.ws.onmessage = (event) => {
       const text = event.data as string;
-      console.log('WebSocket message:', text);
+      console.log('WebSocket message received:', text);
       this.handleIncomingLog(text);
     };
 
@@ -178,8 +191,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     this.lines.push(parsed);
     if (this.lines.length > 100) this.lines.shift();
 
-    // Clear coreMap on reboot detection
-    if (rawLine.includes('Restarting System because of API Request')) { // Restart log msg
+    if (rawLine.includes('Restarting System because of API Request')) {
       this.persistenceService.clearCoreMap();
       this.coreMap = {};
       this.bestCoreId = null;
@@ -187,6 +199,45 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       this.topCores = [];
       this.shareScatter = [];
       this.chartData.datasets[0].data = this.shareScatter;
+    }
+
+    try {
+      const jsonData = JSON.parse(rawLine);
+      if (jsonData.method === 'mining.notify' && jsonData.params) {
+        this.lastNotify = {
+          jobId: jsonData.params[0],
+          prevBlockHash: jsonData.params[1],
+          coinbase1: jsonData.params[2],
+          coinbase2: jsonData.params[3],
+          merkleBranches: jsonData.params[4],
+          version: jsonData.params[5],
+          target: jsonData.params[6],
+          ntime: jsonData.params[7]
+        };
+        console.log('Mining notify received:', this.lastNotify);
+      } else if (jsonData.category === 'asic_result') {
+        const task: MiningTask = {
+          jobId: jsonData.jobId,
+          coreId: this.lastJob ? this.lastJob.coreId : 'Unknown',
+          version: jsonData.version,
+          nonce: jsonData.nonce,
+          difficulty: jsonData.diff,
+          timestamp: Date.now(),
+          username: jsonData.username,
+          extranonce2: jsonData.extranonce2,
+          ntime: jsonData.ntime
+        };
+        if (this.lastNotify && this.lastNotify.jobId === jsonData.jobId) {
+          task.prevBlockHash = this.lastNotify.prevBlockHash;
+          task.coinbase = this.lastNotify.coinbase1 + this.lastNotify.coinbase2;
+          task.target = this.lastNotify.target;
+        }
+        this.miningTasks.unshift(task);
+        console.log('New mining task from share result:', task);
+        if (this.miningTasks.length > 5) this.miningTasks.pop();
+      }
+    } catch (e) {
+      // Not a JSON message, proceed with log parsing
     }
 
     this.updateCoreInfo(parsed);
@@ -207,33 +258,28 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
         version: parsed.version,
         coreId: parsed.core
       };
+      console.log('Last job updated:', this.lastJob);
     } else if (parsed.category === 'asic_result' && this.lastJob) {
-      const task: MiningTask = {
-        jobId: this.lastJob.jobId,
-        coreId: this.lastJob.coreId,
-        version: this.lastJob.version,
-        midstate: this.generateMockMidstate(),
-        header: this.generateMockHeader(this.lastJob.version, parsed.nonce),
-        nonce: parsed.nonce,
-        difficulty: parsed.diff,
-        timestamp: Date.now()
-      };
-
-      this.miningTasks.unshift(task);
-      if (this.miningTasks.length > 5) this.miningTasks.pop();
+      if (!this.miningTasks.some(t => t.nonce === parsed.nonce && t.timestamp > Date.now() - 1000)) {
+        const task: MiningTask = {
+          jobId: this.lastJob.jobId,
+          coreId: this.lastJob.coreId,
+          version: this.lastJob.version,
+          nonce: parsed.nonce,
+          difficulty: parsed.diff,
+          timestamp: Date.now()
+        };
+        if (this.lastNotify && this.lastNotify.jobId === this.lastJob.jobId) {
+          task.prevBlockHash = this.lastNotify.prevBlockHash;
+          task.coinbase = this.lastNotify.coinbase1 + this.lastNotify.coinbase2;
+          task.ntime = this.lastNotify.ntime;
+          task.target = this.lastNotify.target;
+        }
+        this.miningTasks.unshift(task);
+        console.log('New mining task from log:', task);
+        if (this.miningTasks.length > 5) this.miningTasks.pop();
+      }
     }
-  }
-
-  private generateMockMidstate(): string {
-    return Array(64).fill('0').join('') + Math.random().toString(16).slice(2, 10).padEnd(32, '0');
-  }
-
-  private generateMockHeader(version: string, nonce: string): string {
-    const prevBlockHash = Array(64).fill('0').join('');
-    const merkleRoot = Array(64).fill('0').join('');
-    const ntime = Math.floor(Date.now() / 1000).toString(16).padStart(8, '0');
-    const target = '00000000ffff0000';
-    return `${version}${prevBlockHash}${merkleRoot}${ntime}${target}${nonce}`.slice(0, 160);
   }
 
   private parseLogLine(rawLine: string): ParsedLine {
@@ -450,7 +496,8 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     }
   }
 
-  public formatHex(hex: string, maxLength: number = 16): string {
+  public formatHex(hex: string | undefined, maxLength: number = 16): string {
+    if (!hex) return 'N/A';
     return hex.length > maxLength ? `${hex.slice(0, maxLength / 2)}...${hex.slice(-maxLength / 2)}` : hex;
   }
 
