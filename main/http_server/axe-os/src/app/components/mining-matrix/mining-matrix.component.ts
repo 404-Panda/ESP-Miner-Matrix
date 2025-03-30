@@ -77,9 +77,8 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   constructor(private persistenceService: PersistenceService) {}
 
   ngOnInit(): void {
-    // Clear coreMap on initial load to ensure a fresh start
-    this.persistenceService.clearCoreMap();
-    this.coreMap = this.persistenceService.loadCoreMap(); // Will be empty after clear
+    // Load persisted coreMap on init (persists across refresh)
+    this.coreMap = this.persistenceService.loadCoreMap();
     this.updateTopCores();
     this.recalculateBestCore();
 
@@ -95,14 +94,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
 
     this.ws.onopen = () => {
       console.log('WebSocket connected');
-      // Clear coreMap when WebSocket connects (indicating device is back online after reboot)
-      this.persistenceService.clearCoreMap();
-      this.coreMap = {};
-      this.bestCoreId = null;
-      this.bestDiff = 0;
-      this.topCores = [];
-      this.shareScatter = [];
-      this.chartData.datasets[0].data = this.shareScatter; // Update chart
+      // Do NOT clear coreMap here; let it persist across refreshes
     };
 
     this.ws.onmessage = (event) => {
@@ -185,6 +177,17 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     const parsed = this.parseLogLine(rawLine);
     this.lines.push(parsed);
     if (this.lines.length > 100) this.lines.shift();
+
+    // Clear coreMap on reboot detection
+    if (rawLine.includes('Restarting System because of API Request')) { // Restart log msg
+      this.persistenceService.clearCoreMap();
+      this.coreMap = {};
+      this.bestCoreId = null;
+      this.bestDiff = 0;
+      this.topCores = [];
+      this.shareScatter = [];
+      this.chartData.datasets[0].data = this.shareScatter;
+    }
 
     this.updateCoreInfo(parsed);
     this.updateMiningTasks(parsed);
