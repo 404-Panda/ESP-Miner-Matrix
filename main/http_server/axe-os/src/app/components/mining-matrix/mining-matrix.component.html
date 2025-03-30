@@ -1,4 +1,3 @@
-<!-- src/app/mining-matrix/mining-matrix.component.html -->
 <div class="matrix-container" #scrollContainer>
   <div class="matrix-line" *ngFor="let line of lines">
     <span class="time-stamp">[{{ line.time }}]</span>
@@ -49,11 +48,16 @@
         <div class="task-header">Job {{task.jobId}} - Core {{task.coreId}}</div>
         <div class="task-data">
           <div>Version: {{task.version}}</div>
-          <div>Midstate: {{formatHex(task.midstate)}}</div>
-          <div>Block Header: {{formatHex(task.header, 32)}}</div>
+          <div>Prev Block: {{formatHex(task.prevBlockHash)}}</div>
+          <div>Coinbase: {{formatHex(task.coinbase)}}</div>
+          <div>ntime: {{task.ntime || 'N/A'}}</div>
+          <div>Target: {{formatHex(task.target)}}</div>
           <div>Nonce: {{task.nonce}}</div>
           <div>Difficulty: {{task.difficulty | number:'1.1-2'}}</div>
         </div>
+      </div>
+      <div *ngIf="miningTasks.length === 0" class="no-data">
+        No mining tasks available yet
       </div>
     </div>
   </div>
@@ -92,7 +96,7 @@
     <div class="legend-item"><span class="cell-orange2"></span> 500M-1B</div>
     <div class="legend-item"><span class="cell-orange3"></span> 1B-10B</div>
     <div class="legend-item"><span class="cell-orange4"></span> 10B+</div>
-    <div class="legend-item"><span class="best-core"></span> Best Core</div>
+    <div class="legend-item"><span class="cell-best-core"></span> Best Core</div>
     <div class="top-cores">
       <h5>Top 5 Cores</h5>
       <div *ngFor="let core of topCores; let i = index" class="top-core-item">
