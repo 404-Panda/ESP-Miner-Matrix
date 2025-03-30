@@ -1,0 +1,117 @@
+<!-- src/app/mining-matrix/mining-matrix.component.html -->
+<div class="matrix-container" #scrollContainer>
+  <div class="matrix-line" *ngFor="let line of lines">
+    <span class="time-stamp">[{{ line.time }}]</span>
+    <span *ngIf="line.category === 'asic_result'; else fallback">
+      <strong>ASIC:</strong> Ver={{ line.version }}, Nonce={{ line.nonce }},
+      Diff=<strong [ngClass]="{'highlight': line.highlight}">
+        {{ line.diff | number:'1.1-2' }}
+      </strong> / {{ line.diffMax | number:'1.1-2' }}
+    </span>
+    <ng-template [ngIf]="line.category === 'frequency'">
+      <strong>FREQ:</strong> {{ line.freq | number:'1.2-2' }}MHz
+    </ng-template>
+    <ng-template [ngIf]="line.category === 'job'">
+      <strong>JOB:</strong> ID=<strong>{{ line.jobId }}</strong>
+    </ng-template>
+    <ng-template [ngIf]="line.category === 'jobInfo'">
+      <strong>JOB INFO:</strong> 
+      ID=<strong>{{ line.jobId }}</strong>, 
+      Core=<strong>{{ line.core }}</strong>, 
+      Ver={{ line.version }}
+    </ng-template>
+    <ng-template #fallback>
+      {{ line.raw }}
+    </ng-template>
+  </div>
+</div>
+
+<div class="best-core-stats">
+  <div class="best-core-info">
+    {{ getBestCoreLabel() }}
+  </div>
+  <div class="best-core-logs" *ngIf="bestCoreId !== null">
+    <h4>Live Debug For {{ bestCoreId }}</h4>
+    <div class="best-core-logs-container">
+      <div *ngFor="let l of bestCoreDetailLines">
+        {{ l }}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mining-pipeline">
+  <h3>ASIC Mining Pipeline</h3>
+  <div class="pipeline-container">
+    <div class="pipeline-track">
+      <div class="task-card" *ngFor="let task of miningTasks; trackBy: trackByJobId"
+           [ngClass]="{'new-task': isNewTask(task)}">
+        <div class="task-header">Job {{task.jobId}} - Core {{task.coreId}}</div>
+        <div class="task-data">
+          <div>Version: {{task.version}}</div>
+          <div>Midstate: {{formatHex(task.midstate)}}</div>
+          <div>Block Header: {{formatHex(task.header, 32)}}</div>
+          <div>Nonce: {{task.nonce}}</div>
+          <div>Difficulty: {{task.difficulty | number:'1.1-2'}}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="heatmap">
+  <h3>BM1366 Cores Heatmap ({{ totalCores }} Cores)</h3>
+  <div class="core-grid" [style.grid-template-columns]="'repeat(' + gridSize + ', minmax(0, 1fr))'">
+    <div
+      class="cell"
+      *ngFor="let core of cores"
+      [ngClass]="getCoreClass(core.big, core.small)"
+      [attr.title]="getCoreTitle(core.big, core.small)"
+    >
+      <span class="nonce">
+        {{ getCoreInfo(core.big, core.small).lastNonce }}
+      </span>
+    </div>
+  </div>
+  <div class="legend">
+    <h4>Difficulty Ranges & Top Performers</h4>
+    <div class="legend-item"><span class="cell-red1"></span> ≤ 200</div>
+    <div class="legend-item"><span class="cell-red2"></span> 200-500</div>
+    <div class="legend-item"><span class="cell-red3"></span> 500-1k</div>
+    <div class="legend-item"><span class="cell-red4"></span> 1k-5k</div>
+    <div class="legend-item"><span class="cell-red5"></span> 5k-10k</div>
+    <div class="legend-item"><span class="cell-green1"></span> 10k-50k</div>
+    <div class="legend-item"><span class="cell-green2"></span> 50k-100k</div>
+    <div class="legend-item"><span class="cell-green3"></span> 100k-500k</div>
+    <div class="legend-item"><span class="cell-green4"></span> 500k-1M</div>
+    <div class="legend-item"><span class="cell-yellow1"></span> 1M-5M</div>
+    <div class="legend-item"><span class="cell-yellow2"></span> 5M-10M</div>
+    <div class="legend-item"><span class="cell-yellow3"></span> 10M-50M</div>
+    <div class="legend-item"><span class="cell-yellow4"></span> 50M-100M</div>
+    <div class="legend-item"><span class="cell-orange1"></span> 100M-500M</div>
+    <div class="legend-item"><span class="cell-orange2"></span> 500M-1B</div>
+    <div class="legend-item"><span class="cell-orange3"></span> 1B-10B</div>
+    <div class="legend-item"><span class="cell-orange4"></span> 10B+</div>
+    <div class="legend-item"><span class="best-core"></span> Best Core</div>
+    <div class="top-cores">
+      <h5>Top 5 Cores</h5>
+      <div *ngFor="let core of topCores; let i = index" class="top-core-item">
+        {{i + 1}}. {{core.coreId}} ({{core.highestDiff >= 1e9 ? (core.highestDiff/1e9).toFixed(1) + 'B' : 
+          core.highestDiff >= 1e6 ? (core.highestDiff/1e6).toFixed(1) + 'M' : 
+          core.highestDiff >= 1e3 ? (core.highestDiff/1e3).toFixed(1) + 'k' : 
+          core.highestDiff.toFixed(1)}})
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card scatter-chart-container">
+  <h3>Share Difficulty Plot</h3>
+  <p-chart
+    type="scatter"
+    [data]="chartData"
+    [options]="chartOptions"
+    style="height: 400px; width: 100%;"
+  >
+  </p-chart>
+</div>
