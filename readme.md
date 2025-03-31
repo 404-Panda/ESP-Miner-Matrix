@@ -5,8 +5,12 @@
 ![GitHub contributors](https://img.shields.io/github/contributors/skot/esp-miner)
 
 
-# ESP-Miner
-esp-miner is open source ESP32 firmware for the [Bitaxe](https://github.com/skot/bitaxe)
+# ESP-Miner-Matrix
+based on the esp-miner by OSMU and bitaxe it's an open source ESP32 firmware for the [Bitaxe](https://github.com/skot/bitaxe)
+
+Please note only working on the BM1366 chip at this time and 204 board.
+
+Other boards and chips may have issues when using miner matrix.
 
 If you are looking for premade images to load on your Bitaxe, check out the [releases](https://github.com/skot/ESP-Miner/releases) page. Maybe you want [instructions](https://github.com/skot/ESP-Miner/blob/master/flashing.md) for loading factory images.
 
