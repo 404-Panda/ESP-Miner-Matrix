@@ -85,7 +85,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   private lastAsicResult: ParsedLine | null = null;
   public topCores: CoreInfo[] = [];
   public miningTasks: MiningTask[] = [];
-  private highestDiffTask: MiningTask | null = null; // Track the highest difficulty task
+  private highestDiffTask: MiningTask | null = null;
   private lastJob: { jobId: string; version: string; coreId: string; stratumJobId?: string } | null = null;
   private notifyMap: Record<string, MiningNotify> = {};
   private jobIdMap: Record<string, string> = {};
@@ -105,6 +105,9 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.coreMap = this.persistenceService.loadCoreMap();
+    const { tasks, highestDiffTask } = this.persistenceService.loadMiningTasks();
+    this.miningTasks = tasks;
+    this.highestDiffTask = highestDiffTask;
     this.updateTopCores();
     this.recalculateBestCore();
 
@@ -163,6 +166,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     if (this.ws) this.ws.close();
     this.persistenceService.saveCoreMap(this.coreMap);
+    this.persistenceService.saveMiningTasks(this.miningTasks, this.highestDiffTask);
   }
 
   private recalculateBestCore(): void {
@@ -184,6 +188,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
 
     if (rawLine.includes('Restarting System because of API Request')) {
       this.persistenceService.clearCoreMap();
+      this.persistenceService.clearMiningTasks();
       this.coreMap = {};
       this.bestCoreId = null;
       this.bestDiff = 0;
@@ -282,6 +287,9 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
         if (this.miningTasks.length > 10) {
           this.miningTasks = this.miningTasks.slice(0, 10);
         }
+
+        // Save to persistence
+        this.persistenceService.saveMiningTasks(this.miningTasks, this.highestDiffTask);
 
         console.log('New mining task from share_submitted:', task);
         console.log('Updated miningTasks:', this.miningTasks);
