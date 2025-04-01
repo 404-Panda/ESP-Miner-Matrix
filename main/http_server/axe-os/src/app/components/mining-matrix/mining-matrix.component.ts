@@ -1,65 +1,73 @@
 import { Component, OnDestroy, OnInit, ElementRef, ViewChild } from '@angular/core';
 import { PersistenceService } from '../../persistence.service';
 
-// Interface for parsed log lines from mining operations
 interface ParsedLine {
-  raw: string;          // Original unprocessed log line
-  time: string;         // Timestamp of the log entry
-  category: string;     // Type of log message (e.g., 'asic_result', 'jobInfo')
-  version: string;      // Version information from the mining hardware
-  nonce: string;        // Nonce value from mining result
-  diff: number;         // Actual difficulty achieved
-  diffMax: number;      // Maximum difficulty target
-  highlight: boolean;   // Whether to highlight this entry (e.g., diff > diffMax)
-  freq: number;         // Frequency setting in MHz
-  jobId: string;        // Unique identifier for mining job
-  core: string;         // Core identifier (e.g., "0/1" for big/small core)
+  raw: string;
+  time: string;
+  category: string;
+  version: string;
+  nonce: string;
+  diff: number;
+  diffMax: number;
+  highlight: boolean;
+  freq: number;
+  jobId: string;
+  core: string;
+  prevBlockHash?: string;
+  coinbase?: string;
+  coinbase1?: string;
+  coinbase2?: string;
+  merkleBranches?: string[];
+  ntime?: string;
+  target?: string;
+  username?: string;
+  extranonce2?: string;
+  stratumJobId?: string;
 }
 
-// Interface for core-specific information tracking
 interface CoreInfo {
-  coreId: string;       // Unique identifier for the core (e.g., "0/1")
-  lastNonce: string;    // Most recent nonce found by this core
-  lastDiff: number;     // Most recent difficulty achieved
-  highestDiff: number;  // Highest difficulty ever achieved by this core
-  lastDiffMax: number;  // Most recent maximum difficulty target
-  lastTime: string;     // Timestamp of last update
+  coreId: string;
+  lastNonce: string;
+  lastDiff: number;
+  highestDiff: number;
+  lastDiffMax: number;
+  lastTime: string;
 }
 
-// Interface for scatter plot data points
 interface ScatterPoint {
-  x: number;           // Timestamp (x-axis)
-  y: number;           // Difficulty value (y-axis)
-  color: string;       // Color based on difficulty
-  radius: number;      // Point size based on difficulty
+  x: number;
+  y: number;
+  color: string;
+  radius: number;
 }
 
-// Interface for completed mining tasks
 interface MiningTask {
-  jobId: string;        // Unique job identifier
-  coreId: string;       // Core that processed the task
-  version: string;      // Mining software/hardware version
-  prevBlockHash?: string; // Previous block hash (optional)
-  coinbase?: string;    // Coinbase transaction data (optional)
-  ntime?: string;       // Timestamp in mining format (optional)
-  target?: string;      // Difficulty target (optional)
-  nonce: string;        // Nonce solution
-  difficulty: number;   // Achieved difficulty
-  timestamp: number;    // Local timestamp of task completion
-  username?: string;    // Miner username (optional)
-  extranonce2?: string; // Extra nonce value (optional)
+  jobId: string;
+  coreId: string;
+  version: string;
+  prevBlockHash?: string;
+  coinbase?: string;
+  coinbase1?: string;
+  coinbase2?: string;
+  merkleBranches?: string[];
+  ntime?: string;
+  target?: string;
+  nonce: string;
+  difficulty: number;
+  timestamp: number;
+  username?: string;
+  extranonce2?: string;
 }
 
-// Interface for mining.notify messages from the pool
 interface MiningNotify {
-  jobId: string;         // Job identifier
-  prevBlockHash: string; // Previous block hash
-  coinbase1: string;     // First part of coinbase transaction
-  coinbase2: string;     // Second part of coinbase transaction
-  merkleBranches: string[]; // Merkle branch data
-  version: string;       // Block version
-  target: string;        // Difficulty target
-  ntime: string;         // Timestamp
+  jobId: string;
+  prevBlockHash: string;
+  coinbase1: string;
+  coinbase2: string;
+  merkleBranches: string[];
+  version: string;
+  target: string;
+  ntime: string;
 }
 
 @Component({
@@ -68,95 +76,57 @@ interface MiningNotify {
   styleUrls: ['./mining-matrix.component.scss']
 })
 export class MiningMatrixComponent implements OnInit, OnDestroy {
-  // WebSocket connection for real-time updates
   private ws?: WebSocket;
-
-  // Array of recent parsed log lines
   public lines: ParsedLine[] = [];
-  
-  // Map of core information by core ID
   public coreMap: Record<string, CoreInfo> = {};
-  
-  // ID of the core with highest difficulty
   public bestCoreId: string | null = null;
-  
-  // Highest difficulty achieved across all cores
   public bestDiff = 0;
-  
-  // Detailed log lines for the best core
   public bestCoreDetailLines: string[] = [];
-  
-  // Last ASIC result for pairing with job info
   private lastAsicResult: ParsedLine | null = null;
-  
-  // Top 5 cores by highest difficulty
   public topCores: CoreInfo[] = [];
-  
-  // Array of recent mining tasks
   public miningTasks: MiningTask[] = [];
-  
-  // Last job assignment information
-  private lastJob: { jobId: string; version: string; coreId: string } | null = null;
-  
-  // Last mining.notify message received
-  private lastNotify: MiningNotify | null = null;
+  private highestDiffTask: MiningTask | null = null; // Track the highest difficulty task
+  private lastJob: { jobId: string; version: string; coreId: string; stratumJobId?: string } | null = null;
+  private notifyMap: Record<string, MiningNotify> = {};
+  private jobIdMap: Record<string, string> = {};
 
-  // Total number of cores in the mining system
   public totalCores = 896;
-  
-  // Size of the square grid for core visualization
   public gridSize = Math.ceil(Math.sqrt(this.totalCores));
-  
-  // Array of core coordinates (big/small indices)
   public cores: { big: number; small: number }[] = [];
-
-  // Scatter plot data for share difficulty visualization
   public shareScatter: ScatterPoint[] = [];
 
-  // Chart.js configuration objects
   public chartData: any;
   public chartOptions: any;
 
-  // Reference to the scroll container element in the template
   @ViewChild('scrollContainer', { static: false })
   private scrollContainer?: ElementRef<HTMLDivElement>;
 
   constructor(private persistenceService: PersistenceService) {}
 
-  /**
-   * Initializes the component, setting up WebSocket connection and chart configuration
-   */
   ngOnInit(): void {
-    // Load persisted core data
     this.coreMap = this.persistenceService.loadCoreMap();
     this.updateTopCores();
     this.recalculateBestCore();
 
-    // Generate core coordinate array (112 big cores × 8 small cores)
     for (let b = 0; b < 112; b++) {
       for (let s = 0; s < 8; s++) {
         this.cores.push({ big: b, small: s });
       }
     }
 
-    // Establish WebSocket connection based on protocol
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl = `${protocol}://${window.location.host}/api/ws`;
     this.ws = new WebSocket(wsUrl);
 
-    // WebSocket event handlers
     this.ws.onopen = () => console.log('WebSocket connected');
-    
     this.ws.onmessage = (event) => {
       const text = event.data as string;
       console.log('WebSocket message received:', text);
       this.handleIncomingLog(text);
     };
-
     this.ws.onerror = (error) => console.error('WebSocket error:', error);
     this.ws.onclose = () => console.log('WebSocket closed');
 
-    // Configure chart data for difficulty scatter plot
     this.chartData = {
       datasets: [{
         label: 'Difficulty',
@@ -168,7 +138,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       }]
     };
 
-    // Configure chart options with logarithmic scale
     this.chartOptions = {
       responsive: true,
       maintainAspectRatio: false,
@@ -191,17 +160,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     };
   }
 
-  /**
-   * Cleanup on component destruction
-   */
   ngOnDestroy(): void {
     if (this.ws) this.ws.close();
     this.persistenceService.saveCoreMap(this.coreMap);
   }
 
-  /**
-   * Recalculates the best core based on highest difficulty
-   */
   private recalculateBestCore(): void {
     this.bestDiff = 0;
     this.bestCoreId = null;
@@ -214,16 +177,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     }
   }
 
-  /**
-   * Handles incoming WebSocket messages and updates component state
-   * @param rawLine The raw log message received
-   */
   private handleIncomingLog(rawLine: string): void {
     const parsed = this.parseLogLine(rawLine);
     this.lines.push(parsed);
     if (this.lines.length > 100) this.lines.shift();
 
-    // Handle system restart
     if (rawLine.includes('Restarting System because of API Request')) {
       this.persistenceService.clearCoreMap();
       this.coreMap = {};
@@ -231,14 +189,17 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       this.bestDiff = 0;
       this.topCores = [];
       this.shareScatter = [];
+      this.jobIdMap = {};
+      this.notifyMap = {};
+      this.miningTasks = [];
+      this.highestDiffTask = null;
       this.chartData.datasets[0].data = this.shareScatter;
     }
 
-    // Parse JSON messages if applicable
     try {
       const jsonData = JSON.parse(rawLine);
       if (jsonData.method === 'mining.notify' && jsonData.params) {
-        this.lastNotify = {
+        const notify: MiningNotify = {
           jobId: jsonData.params[0],
           prevBlockHash: jsonData.params[1],
           coinbase1: jsonData.params[2],
@@ -248,30 +209,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
           target: jsonData.params[6],
           ntime: jsonData.params[7]
         };
-        console.log('Mining notify received:', this.lastNotify);
-      } else if (jsonData.category === 'asic_result') {
-        const task: MiningTask = {
-          jobId: jsonData.jobId,
-          coreId: this.lastJob ? this.lastJob.coreId : 'Unknown',
-          version: jsonData.version,
-          nonce: jsonData.nonce,
-          difficulty: jsonData.diff,
-          timestamp: Date.now(),
-          username: jsonData.username,
-          extranonce2: jsonData.extranonce2,
-          ntime: jsonData.ntime
-        };
-        if (this.lastNotify && this.lastNotify.jobId === jsonData.jobId) {
-          task.prevBlockHash = this.lastNotify.prevBlockHash;
-          task.coinbase = this.lastNotify.coinbase1 + this.lastNotify.coinbase2;
-          task.target = this.lastNotify.target;
-        }
-        this.miningTasks.unshift(task);
-        console.log('New mining task from share result:', task);
-        if (this.miningTasks.length > 5) this.miningTasks.pop();
+        this.notifyMap[notify.jobId] = notify;
+        console.log('Mining notify received (JSON):', notify);
       }
     } catch (e) {
-      // Not a JSON message, continue with log parsing
+      // Not JSON, proceed with log parsing
     }
 
     this.updateCoreInfo(parsed);
@@ -285,42 +227,68 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     setTimeout(() => this.scrollToBottom(), 20);
   }
 
-  /**
-   * Updates mining tasks based on parsed log line
-   * @param parsed The parsed log line
-   */
   private updateMiningTasks(parsed: ParsedLine): void {
     if (parsed.category === 'jobInfo') {
       this.lastJob = { jobId: parsed.jobId, version: parsed.version, coreId: parsed.core };
       console.log('Last job updated:', this.lastJob);
     } else if (parsed.category === 'asic_result' && this.lastJob) {
+      this.lastAsicResult = parsed;
+      console.log('ASIC result stored temporarily:', parsed);
+    } else if (parsed.category === 'share_submitted') {
       if (!this.miningTasks.some(t => t.nonce === parsed.nonce && t.timestamp > Date.now() - 1000)) {
         const task: MiningTask = {
-          jobId: this.lastJob.jobId,
-          coreId: this.lastJob.coreId,
-          version: this.lastJob.version,
+          jobId: parsed.jobId,
+          coreId: parsed.core || this.lastJob?.coreId || 'Unknown',
+          version: parsed.version,
           nonce: parsed.nonce,
-          difficulty: parsed.diff,
-          timestamp: Date.now()
+          difficulty: this.lastAsicResult ? this.lastAsicResult.diff : 0,
+          timestamp: Date.now(),
+          prevBlockHash: parsed.prevBlockHash,
+          coinbase: parsed.coinbase,
+          coinbase1: parsed.coinbase1,
+          coinbase2: parsed.coinbase2,
+          merkleBranches: parsed.merkleBranches,
+          ntime: parsed.ntime,
+          target: parsed.target,
+          username: parsed.username,
+          extranonce2: parsed.extranonce2
         };
-        if (this.lastNotify && this.lastNotify.jobId === this.lastJob.jobId) {
-          task.prevBlockHash = this.lastNotify.prevBlockHash;
-          task.coinbase = this.lastNotify.coinbase1 + this.lastNotify.coinbase2;
-          task.ntime = this.lastNotify.ntime;
-          task.target = this.lastNotify.target;
+        const notify = this.notifyMap[task.jobId];
+        if (notify) {
+          task.prevBlockHash = notify.prevBlockHash || task.prevBlockHash;
+          task.coinbase1 = notify.coinbase1 || task.coinbase1;
+          task.coinbase2 = notify.coinbase2 || task.coinbase2;
+          task.coinbase = notify.coinbase1 + notify.coinbase2 || task.coinbase;
+          task.merkleBranches = notify.merkleBranches || task.merkleBranches;
+          task.ntime = parsed.ntime || notify.ntime;
+          task.target = notify.target || task.target;
+        } else {
+          console.warn(`No notify data found for job ${task.jobId} in notifyMap`);
         }
+
+        // Update highest difficulty task
+        if (!this.highestDiffTask || task.difficulty > this.highestDiffTask.difficulty) {
+          this.highestDiffTask = { ...task }; // Clone to avoid reference issues
+        }
+
+        // Add new task and maintain list
         this.miningTasks.unshift(task);
-        console.log('New mining task from log:', task);
-        if (this.miningTasks.length > 5) this.miningTasks.pop();
+        
+        // Ensure highest difficulty task is at the top
+        this.miningTasks = this.miningTasks.filter(t => t !== this.highestDiffTask); // Remove highest if it’s elsewhere
+        this.miningTasks.unshift(this.highestDiffTask); // Add it back at the top
+        
+        // Keep only 10 tasks total (including highest)
+        if (this.miningTasks.length > 10) {
+          this.miningTasks = this.miningTasks.slice(0, 10);
+        }
+
+        console.log('New mining task from share_submitted:', task);
+        console.log('Updated miningTasks:', this.miningTasks);
       }
     }
   }
 
-  /**
-   * Parses a raw log line into a structured ParsedLine object
-   * @param rawLine The raw log message
-   * @returns ParsedLine object with extracted data
-   */
   private parseLogLine(rawLine: string): ParsedLine {
     const noAnsi = rawLine.replace(/\x1b\[[0-9;]*m/g, '');
     const time = new Date().toLocaleTimeString();
@@ -336,8 +304,55 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       highlight: false,
       freq: 0,
       jobId: '',
-      core: ''
+      core: '',
+      prevBlockHash: undefined,
+      coinbase: undefined,
+      coinbase1: undefined,
+      coinbase2: undefined,
+      merkleBranches: undefined,
+      ntime: undefined,
+      target: undefined,
+      username: undefined,
+      extranonce2: undefined,
+      stratumJobId: undefined
     };
+
+    if (noAnsi.includes('Mining Notify - Job ID:')) {
+      line.category = 'mining_notify';
+      const jobIdMatch = /Job ID:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (jobIdMatch) line.jobId = jobIdMatch[1];
+      const prevBlockMatch = /PrevBlockHash:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (prevBlockMatch) line.prevBlockHash = prevBlockMatch[1];
+      const coinbase1Match = /Coinbase1:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (coinbase1Match) line.coinbase1 = coinbase1Match[1];
+      const coinbase2Match = /Coinbase2:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (coinbase2Match) line.coinbase2 = coinbase2Match[1];
+      const versionMatch = /Version:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (versionMatch) line.version = versionMatch[1];
+      const targetMatch = /Target:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (targetMatch) line.target = targetMatch[1];
+      const ntimeMatch = /Ntime:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (ntimeMatch) line.ntime = ntimeMatch[1];
+      const merkleMatch = /Merkle Branches:\s*\[(.*?)\]/.exec(noAnsi);
+      if (merkleMatch) {
+        const branches = merkleMatch[1].split(',').map(b => b.trim());
+        line.merkleBranches = branches.length > 0 && branches[0] !== '' ? branches : [];
+      }
+      if (line.jobId) {
+        this.notifyMap[line.jobId] = {
+          jobId: line.jobId,
+          prevBlockHash: line.prevBlockHash || '',
+          coinbase1: line.coinbase1 || '',
+          coinbase2: line.coinbase2 || '',
+          merkleBranches: line.merkleBranches || [],
+          version: line.version || '',
+          target: line.target || '',
+          ntime: line.ntime || ''
+        };
+        console.log('Mining notify parsed from log:', this.notifyMap[line.jobId]);
+      }
+      return line;
+    }
 
     if (noAnsi.includes('asic_result')) {
       line.category = 'asic_result';
@@ -345,10 +360,10 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       if (verMatch) line.version = verMatch[1];
       const nonceMatch = /Nonce\s+([0-9A-Fa-f]+)/.exec(noAnsi);
       if (nonceMatch) line.nonce = nonceMatch[1];
-      const diffMatch = /diff\s+([\d.]+)\s+of\s+([\d.]+)/.exec(noAnsi);
+      const diffMatch = /diff\s+([\d,.]+)\s+of\s+([\d,.]+)/.exec(noAnsi);
       if (diffMatch) {
-        line.diff = parseFloat(diffMatch[1]);
-        line.diffMax = parseFloat(diffMatch[2]);
+        line.diff = parseFloat(diffMatch[1].replace(/,/g, ''));
+        line.diffMax = parseFloat(diffMatch[2].replace(/,/g, ''));
         if (line.diff > line.diffMax) line.highlight = true;
       }
       return line;
@@ -379,15 +394,62 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       return line;
     }
 
+    if (noAnsi.includes('Share Submitted:')) {
+      line.category = 'share_submitted';
+      const coreMatch = /Core=([0-9]+\/[0-9]+)/.exec(noAnsi);
+      if (coreMatch) line.core = coreMatch[1];
+      const jobMatch = /Job=([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (jobMatch) line.jobId = jobMatch[1];
+      const usernameMatch = /Username=([^,]+)/.exec(noAnsi);
+      if (usernameMatch) line.username = usernameMatch[1];
+      const extranonce2Match = /Extranonce2=([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (extranonce2Match) line.extranonce2 = extranonce2Match[1];
+      const ntimeMatch = /ntime=([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (ntimeMatch) line.ntime = ntimeMatch[1];
+      const nonceMatch = /Nonce=([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (nonceMatch) line.nonce = nonceMatch[1];
+      const versionMatch = /Version=([0-9A-Fa-f]+)/.exec(noAnsi);
+      if (versionMatch) line.version = versionMatch[1];
+      const prevBlockMatch = /PrevBlock=([0-9A-Fa-f]+|N\/A)/.exec(noAnsi);
+      if (prevBlockMatch && prevBlockMatch[1] !== 'N/A') line.prevBlockHash = prevBlockMatch[1];
+      const coinbase1Match = /Coinbase1=([0-9A-Fa-f]+|N\/A)/.exec(noAnsi);
+      if (coinbase1Match && coinbase1Match[1] !== 'N/A') line.coinbase1 = coinbase1Match[1];
+      const coinbase2Match = /Coinbase2=([0-9A-Fa-f]+|N\/A)/.exec(noAnsi);
+      if (coinbase2Match && coinbase2Match[1] !== 'N/A') line.coinbase2 = coinbase2Match[1];
+      const merkleMatch = /Merkle=\[(.*?)\]/.exec(noAnsi);
+      if (merkleMatch) {
+        const branches = merkleMatch[1].split(',').map(b => b.trim());
+        line.merkleBranches = branches.length > 0 && branches[0] !== '' ? branches : undefined;
+      }
+      const targetMatch = /Target=([0-9A-Fa-f]+|N\/A)/.exec(noAnsi);
+      if (targetMatch && targetMatch[1] !== 'N/A') line.target = targetMatch[1];
+      return line;
+    }
+
+    if (noAnsi.includes('"method": "mining.submit"')) {
+      line.category = 'share_submitted';
+      try {
+        const jsonMatch = /{"id":.*?"mining.submit", "params": \[(.*?)\]}/.exec(noAnsi);
+        if (jsonMatch) {
+          const paramsStr = jsonMatch[1];
+          const params = JSON.parse(`[${paramsStr}]`);
+          line.username = params[0];
+          line.jobId = params[1];
+          line.extranonce2 = params[2];
+          line.ntime = params[3];
+          line.nonce = params[4];
+          line.version = params[5];
+          line.core = this.lastJob?.coreId || 'Unknown';
+        }
+      } catch (e) {
+        console.error('Failed to parse mining.submit JSON:', e);
+      }
+      return line;
+    }
+
     return line;
   }
 
-  /**
-   * Determines color based on difficulty value
-   * @param diff Difficulty value
-   * @param isBest Whether this is the best core
-   * @returns Hex color code
-   */
   private getColorForDiff(diff: number, isBest: boolean): string {
     if (diff <= 200) return '#4B0000';
     if (diff <= 500) return '#8B0000';
@@ -408,11 +470,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     return '#FFCC66';
   }
 
-  /**
-   * Calculates point radius based on difficulty
-   * @param diff Difficulty value
-   * @returns Radius between 3 and 15
-   */
   private getRadiusForDiff(diff: number): number {
     const logDiff = Math.log10(diff);
     const minLog = Math.log10(100);
@@ -421,10 +478,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     return Math.max(3, Math.min(15, 3 + normalized * 12));
   }
 
-  /**
-   * Updates core information based on parsed log data
-   * @param line Parsed log line
-   */
   private updateCoreInfo(line: ParsedLine): void {
     if (line.category === 'asic_result') {
       this.lastAsicResult = line;
@@ -472,28 +525,19 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
           lastDiff: 0,
           highestDiff: 0,
           lastDiffMax: 0,
-          lastTime: new Date().toLocaleTimeString()
+          lastTime: ''
         };
       }
       this.persistenceService.saveCoreMap(this.coreMap);
     }
   }
 
-  /**
-   * Updates the list of top 5 cores by highest difficulty
-   */
   private updateTopCores(): void {
     this.topCores = Object.values(this.coreMap)
       .sort((a, b) => b.highestDiff - a.highestDiff)
       .slice(0, 5);
   }
 
-  /**
-   * Gets core information for a specific core
-   * @param big Big core index
-   * @param small Small core index
-   * @returns CoreInfo object
-   */
   public getCoreInfo(big: number, small: number): CoreInfo {
     const key = `${big}/${small}`;
     return this.coreMap[key] || {
@@ -506,24 +550,12 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     };
   }
 
-  /**
-   * Generates tooltip text for a core
-   * @param big Big core index
-   * @param small Small core index
-   * @returns Formatted string with core details
-   */
   public getCoreTitle(big: number, small: number): string {
     const info = this.getCoreInfo(big, small);
     if (!info.lastNonce) return `Core ${info.coreId}\nNo Data Yet`;
     return `Core ${info.coreId}\nNonce=${info.lastNonce}\nHighest Diff=${info.highestDiff.toFixed(1)}\nLast Diff=${info.lastDiff.toFixed(1)}/${info.lastDiffMax.toFixed(1)}\nLastSeen=${info.lastTime}`;
   }
 
-  /**
-   * Determines CSS classes for core visualization
-   * @param big Big core index
-   * @param small Small core index
-   * @returns Space-separated class string
-   */
   public getCoreClass(big: number, small: number): string {
     const info = this.getCoreInfo(big, small);
     const diff = info.highestDiff;
@@ -557,18 +589,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     return baseClass;
   }
 
-  /**
-   * Gets label text for the best core
-   * @returns Formatted string with best core info
-   */
   public getBestCoreLabel(): string {
     if (!this.bestCoreId) return 'No best core yet';
     return `Best Core: ${this.bestCoreId} (Diff=${this.bestDiff.toFixed(1)})`;
   }
 
-  /**
-   * Scrolls the log container to the bottom
-   */
   private scrollToBottom(): void {
     if (this.scrollContainer?.nativeElement) {
       const el = this.scrollContainer.nativeElement;
@@ -576,33 +601,25 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     }
   }
 
-  /**
-   * Formats hex strings with truncation if needed
-   * @param hex Hex string to format
-   * @param maxLength Maximum length before truncation
-   * @returns Formatted hex string
-   */
   public formatHex(hex: string | undefined, maxLength: number = 16): string {
     if (!hex) return 'N/A';
     return hex.length > maxLength ? `${hex.slice(0, maxLength / 2)}...${hex.slice(-maxLength / 2)}` : hex;
   }
 
-  /**
-   * Tracking function for ngFor over mining tasks
-   * @param index Item index
-   * @param task Mining task object
-   * @returns Unique identifier
-   */
+  public formatMerkleBranches(branches: string[] | undefined): string {
+    if (!branches || branches.length === 0) return '';
+    return branches.map(b => this.formatHex(b, 16)).join(', ');
+  }
+
   public trackByJobId(index: number, task: MiningTask): string {
     return `${task.jobId}-${task.coreId}-${task.timestamp}`;
   }
 
-  /**
-   * Determines if a task is recent (within 2 seconds)
-   * @param task Mining task object
-   * @returns Boolean indicating if task is new
-   */
   public isNewTask(task: MiningTask): boolean {
     return (Date.now() - task.timestamp) < 2000;
+  }
+
+  public isHighestDiffTask(task: MiningTask): boolean {
+    return this.highestDiffTask === task;
   }
 }
