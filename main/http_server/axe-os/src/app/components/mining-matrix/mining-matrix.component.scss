@@ -1,4 +1,3 @@
-/* src/app/mining-matrix/mining-matrix.component.scss */
 .matrix-container {
   background: #000;
   color: #0f0;
@@ -60,23 +59,22 @@
   }
 
   .pipeline-container {
+    overflow-y: auto;
     overflow-x: hidden;
+    height: 500px; /* Increased height to show more tasks */
     position: relative;
-    height: 300px;
   }
 
   .pipeline-track {
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    animation: scroll-up 20s linear infinite;
-    position: absolute;
     width: 100%;
   }
 
   .task-card {
     background: #222;
-    padding: 0.5rem;
+    padding: 0.75rem;
     border: 1px solid #666;
     border-radius: 4px;
     font-family: monospace;
@@ -91,22 +89,29 @@
     .task-header {
       color: #ff0;
       font-weight: bold;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.75rem;
+      font-size: 1rem;
     }
 
     .task-data {
-      font-size: 0.8rem;
+      font-size: 0.85rem;
       div {
-        margin: 0.2rem 0;
+        margin: 0.3rem 0;
         word-break: break-all;
+      }
+      ul {
+        margin: 0.3rem 0 0.3rem 1.5rem;
+        padding-left: 0;
+        list-style-type: disc;
+      }
+      li {
+        margin: 0.2rem 0;
+      }
+      strong {
+        color: #0ff;
       }
     }
   }
-}
-
-@keyframes scroll-up {
-  0% { transform: translateY(100%); }
-  100% { transform: translateY(-100%); }
 }
 
 @keyframes highlight-new {
@@ -242,4 +247,11 @@
 
 .scatter-chart-container {
   margin-top: 2rem;
+}
+
+.task-card {
+  &.highest-diff-task {
+    border: 2px solid #FFD700; // Gold border for highest diff
+    background-color: #FFF8E1; // Light gold background
+  }
 }
