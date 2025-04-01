@@ -7,20 +7,47 @@
         {{ line.diff | number:'1.1-2' }}
       </strong> / {{ line.diffMax | number:'1.1-2' }}
     </span>
-    <ng-template [ngIf]="line.category === 'frequency'">
-      <strong>FREQ:</strong> {{ line.freq | number:'1.2-2' }}MHz
-    </ng-template>
-    <ng-template [ngIf]="line.category === 'job'">
-      <strong>JOB:</strong> ID=<strong>{{ line.jobId }}</strong>
-    </ng-template>
-    <ng-template [ngIf]="line.category === 'jobInfo'">
-      <strong>JOB INFO:</strong> 
-      ID=<strong>{{ line.jobId }}</strong>, 
-      Core=<strong>{{ line.core }}</strong>, 
-      Ver={{ line.version }}
-    </ng-template>
     <ng-template #fallback>
-      {{ line.raw }}
+      <ng-container [ngSwitch]="line.category">
+        <ng-container *ngSwitchCase="'frequency'">
+          <strong>FREQ:</strong> {{ line.freq | number:'1.2-2' }}MHz
+        </ng-container>
+        <ng-container *ngSwitchCase="'job'">
+          <strong>JOB:</strong> ID=<strong>{{ line.jobId }}</strong>
+        </ng-container>
+        <ng-container *ngSwitchCase="'jobInfo'">
+          <strong>JOB INFO:</strong> 
+          ID=<strong>{{ line.jobId }}</strong>, 
+          Core=<strong>{{ line.core }}</strong>, 
+          Ver={{ line.version }}
+        </ng-container>
+        <ng-container *ngSwitchCase="'share_submitted'">
+          <strong>SHARE SUBMITTED:</strong> 
+          Job=<strong>{{ line.jobId }}</strong>, 
+          Core={{ line.core }}, 
+          Ver={{ line.version }}, 
+          Nonce={{ line.nonce }}, 
+          Username={{ line.username || 'N/A' }}, 
+          Extranonce2={{ line.extranonce2 || 'N/A' }}, 
+          ntime={{ line.ntime || 'N/A' }}
+        </ng-container>
+        <ng-container *ngSwitchCase="'mining_notify'">
+          <strong>NOTIFY:</strong> 
+          Job=<strong>{{ line.jobId }}</strong>, 
+          PrevBlock={{ formatHex(line.prevBlockHash, 16) }}, 
+          Coinbase1={{ formatHex(line.coinbase1, 16) }}, 
+          Coinbase2={{ formatHex(line.coinbase2, 16) }}, 
+          Version={{ line.version }}, 
+          Target={{ formatHex(line.target, 16) }}, 
+          ntime={{ line.ntime || 'N/A' }}
+          <span *ngIf="line.merkleBranches && line.merkleBranches.length > 0">
+            , Merkle=[{{ formatMerkleBranches(line.merkleBranches) }}]
+          </span>
+        </ng-container>
+        <ng-container *ngSwitchDefault>
+          {{ line.raw }}
+        </ng-container>
+      </ng-container>
     </ng-template>
   </div>
 </div>
@@ -40,24 +67,35 @@
 </div>
 
 <div class="mining-pipeline">
-  <h3>ASIC Mining Pipeline</h3>
+  <h3>Submitted Shares Pipeline</h3>
   <div class="pipeline-container">
     <div class="pipeline-track">
       <div class="task-card" *ngFor="let task of miningTasks; trackBy: trackByJobId"
-           [ngClass]="{'new-task': isNewTask(task)}">
-        <div class="task-header">Job {{task.jobId}} - Core {{task.coreId}}</div>
+           [ngClass]="{'new-task': isNewTask(task), 'highest-diff-task': isHighestDiffTask(task)}">
+        <div class="task-header">Job {{ task.jobId }} - Core {{ task.coreId }}</div>
         <div class="task-data">
-          <div>Version: {{task.version}}</div>
-          <div>Prev Block: {{formatHex(task.prevBlockHash)}}</div>
-          <div>Coinbase: {{formatHex(task.coinbase)}}</div>
-          <div>ntime: {{task.ntime || 'N/A'}}</div>
-          <div>Target: {{formatHex(task.target)}}</div>
-          <div>Nonce: {{task.nonce}}</div>
-          <div>Difficulty: {{task.difficulty | number:'1.1-2'}}</div>
+          <div><strong>Version:</strong> {{ task.version }}</div>
+          <div><strong>Prev Block Hash:</strong> {{ formatHex(task.prevBlockHash, 32) }}</div>
+          <div><strong>Coinbase 1:</strong> {{ formatHex(task.coinbase1, 32) }}</div>
+          <div><strong>Coinbase 2:</strong> {{ formatHex(task.coinbase2, 32) }}</div>
+          <div><strong>Full Coinbase:</strong> {{ formatHex(task.coinbase, 64) }}</div>
+          <div *ngIf="task.merkleBranches && task.merkleBranches.length > 0">
+            <strong>Merkle Branches:</strong>
+            <ul>
+              <li *ngFor="let branch of task.merkleBranches">{{ formatHex(branch, 32) }}</li>
+            </ul>
+          </div>
+          <div><strong>ntime:</strong> {{ task.ntime || 'N/A' }}</div>
+          <div><strong>Target:</strong> {{ formatHex(task.target, 32) }}</div>
+          <div><strong>Nonce:</strong> {{ task.nonce }}</div>
+          <div><strong>Difficulty:</strong> {{ task.difficulty | number:'1.1-2' }}</div>
+          <div><strong>Username:</strong> {{ task.username || 'N/A' }}</div>
+          <div><strong>Extranonce2:</strong> {{ task.extranonce2 || 'N/A' }}</div>
+          <div><strong>Timestamp:</strong> {{ task.timestamp | date:'HH:mm:ss' }}</div>
         </div>
       </div>
       <div *ngIf="miningTasks.length === 0" class="no-data">
-        No mining tasks available yet
+        No submitted shares yet
       </div>
     </div>
   </div>
