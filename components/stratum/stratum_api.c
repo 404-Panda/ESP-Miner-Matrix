@@ -345,6 +345,22 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
         int paramsLength = cJSON_GetArraySize(params);
         int value = cJSON_IsTrue(cJSON_GetArrayItem(params, paramsLength - 1));
         message->should_abandon_work = value;
+
+        // Log the parsed mining.notify details for the frontend
+        ESP_LOGI(TAG, "Mining Notify - Job ID: %s, PrevBlockHash: %s, Coinbase1: %s, Coinbase2: %s, Version: %08lx, Target: %08lx, Ntime: %08lx",
+                 new_work->job_id, new_work->prev_block_hash, new_work->coinbase_1, new_work->coinbase_2,
+                 new_work->version, new_work->target, new_work->ntime);
+        // Log merkle branches separately if needed
+        if (new_work->n_merkle_branches > 0) {
+            char merkle_str[1024] = {0};
+            for (size_t i = 0; i < new_work->n_merkle_branches; i++) {
+                char branch_hex[65]; // 64 chars for 32 bytes + null terminator
+                bin2hex(new_work->merkle_branches + HASH_SIZE * i, HASH_SIZE, branch_hex, 65); // Fixed: Added hexlen argument
+                strcat(merkle_str, branch_hex);
+                if (i < new_work->n_merkle_branches - 1) strcat(merkle_str, ",");
+            }
+            ESP_LOGI(TAG, "Merkle Branches: [%s]", merkle_str);
+        }
     } else if (message->method == MINING_SET_DIFFICULTY) {
         cJSON * params = cJSON_GetObjectItem(json, "params");
         uint32_t difficulty = cJSON_GetArrayItem(params, 0)->valueint;
@@ -355,7 +371,7 @@ void STRATUM_V1_parse(StratumApiV1Message * message, const char * stratum_json)
         uint32_t version_mask = strtoul(cJSON_GetArrayItem(params, 0)->valuestring, NULL, 16);
         message->version_mask = version_mask;
     }
-    done:
+done:
     cJSON_Delete(json);
 }
 
