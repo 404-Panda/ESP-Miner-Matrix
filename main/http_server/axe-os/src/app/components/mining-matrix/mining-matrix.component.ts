@@ -1,8 +1,6 @@
-import { Component, OnDestroy, OnInit, ElementRef, ViewChild } from '@angular/core';
+import { Component, OnDestroy, OnInit, ElementRef, ViewChild, HostListener } from '@angular/core';
 import { PersistenceService } from '../../persistence.service';
 
-// DEV NOTE: Interfaces define the structure of data used throughout the component.
-// These are critical for TypeScript type safety and should match the data coming from the WebSocket.
 interface ParsedLine {
   raw: string;
   time: string;
@@ -59,6 +57,7 @@ interface MiningTask {
   timestamp: number;
   username?: string;
   extranonce2?: string;
+  patoshiRange?: string;
 }
 
 interface MiningNotify {
@@ -72,41 +71,86 @@ interface MiningNotify {
   ntime: string;
 }
 
+interface PatoshiTracker {
+  coreId: string;
+  bestNonce: string;
+  rangeStart: number;
+  rangeEnd: number;
+  nonceCount: number;
+}
+
+interface PatoshiRange {
+  start: number;
+  end: number;
+  label: string;
+  color: string;
+}
+
 @Component({
   selector: 'app-mining-matrix',
   templateUrl: './mining-matrix.component.html',
   styleUrls: ['./mining-matrix.component.scss']
 })
 export class MiningMatrixComponent implements OnInit, OnDestroy {
-  private ws?: WebSocket; // DEV NOTE: WebSocket connection for real-time log updates.
-  public lines: ParsedLine[] = []; // DEV NOTE: Stores the most recent 100 log lines for display.
-  public coreMap: Record<string, CoreInfo> = {}; // DEV NOTE: Tracks core performance data, persisted via PersistenceService.
-  public bestCoreId: string | null = null; // DEV NOTE: ID of the core with the highest difficulty found.
-  public bestDiff = 0; // DEV NOTE: Highest difficulty value encountered across all cores.
-  public bestCoreDetailLines: string[] = []; // DEV NOTE: Raw log lines for the best core, capped at 50.
-  private lastAsicResult: ParsedLine | null = null; // DEV NOTE: Temporary storage for the latest ASIC result, used to pair with jobInfo.
-  public topCores: CoreInfo[] = []; // DEV NOTE: Top 5 cores by highest difficulty, updated dynamically.
-  public miningTasks: MiningTask[] = []; // DEV NOTE: List of submitted shares, capped at 10, with highest difficulty at the top.
-  private highestDiffTask: MiningTask | null = null; // DEV NOTE: Tracks the share with the highest difficulty for pinning at the top.
-  private lastJob: { jobId: string; version: string; coreId: string; stratumJobId?: string } | null = null; // DEV NOTE: Last job info to pair with ASIC results.
-  private notifyMap: Record<string, MiningNotify> = {}; // DEV NOTE: Maps job IDs to mining notify data for share enrichment.
-  private jobIdMap: Record<string, string> = {}; // DEV NOTE: Unused currently, reserved for future job ID mapping if needed.
+  private ws?: WebSocket;
+  public lines: ParsedLine[] = [];
+  public coreMap: Record<string, CoreInfo> = {};
+  public bestCoreId: string | null = null;
+  public bestDiff = 0;
+  public bestCoreDetailLines: string[] = [];
+  private lastAsicResult: ParsedLine | null = null;
+  public topCores: CoreInfo[] = [];
+  public miningTasks: MiningTask[] = [];
+  private highestDiffTask: MiningTask | null = null;
+  private lastJob: { jobId: string; version: string; coreId: string; stratumJobId?: string } | null = null;
+  private notifyMap: Record<string, MiningNotify> = {};
+  private jobIdMap: Record<string, string> = {};
 
-  public totalCores = 896; // DEV NOTE: Total number of BM1366 cores (112 big x 8 small).
-  public gridSize = Math.ceil(Math.sqrt(this.totalCores)); // DEV NOTE: Grid size for heatmap display, calculated dynamically.
-  public cores: { big: number; small: number }[] = []; // DEV NOTE: Array of core coordinates for heatmap rendering.
-  public shareScatter: ScatterPoint[] = []; // DEV NOTE: Data points for the difficulty scatter chart, capped at 300.
+  public totalCores = 896;
+  public gridSize = Math.ceil(Math.sqrt(this.totalCores));
+  public cores: { big: number; small: number }[] = [];
+  public shareScatter: ScatterPoint[] = [];
+  public patoshiTrackers: PatoshiTracker[] = [];
+  public patoshiChartData: any;
+  public patoshiChartOptions: any;
 
-  public chartData: any; // DEV NOTE: Configuration for the Chart.js scatter plot.
-  public chartOptions: any; // DEV NOTE: Options for the Chart.js scatter plot, including logarithmic scale.
+  public chartData: any;
+  public chartOptions: any;
 
-  @ViewChild('scrollContainer', { static: false })
-  private scrollContainer?: ElementRef<HTMLDivElement>; // DEV NOTE: Reference to the log container for auto-scrolling.
+  public trackerHeight: number = 200;
+  public isResizing: boolean = false;
+  public trackerScale: number = 1.0;
+  public selectedRange: string | null = null;
 
-  constructor(private persistenceService: PersistenceService) {} // DEV NOTE: Injected service for persisting coreMap and miningTasks.
+  public patoshiRanges: PatoshiRange[] = [
+    { start: 0, end: 163840000, label: '0', color: '#FF6384' },
+    { start: 163840000, end: 327680000, label: '1', color: '#FF8A65' },
+    { start: 327680000, end: 491520000, label: '2', color: '#FFCA28' },
+    { start: 491520000, end: 655360000, label: '3', color: '#FFD54F' },
+    { start: 655360000, end: 819200000, label: '4', color: '#FFF176' },
+    { start: 819200000, end: 983040000, label: '5', color: '#DCE775' },
+    { start: 983040000, end: 1146880000, label: '6', color: '#AED581' },
+    { start: 1146880000, end: 1310720000, label: '7', color: '#81C784' },
+    { start: 1310720000, end: 1474560000, label: '8', color: '#4CAF50' },
+    { start: 1474560000, end: 1638400000, label: '9', color: '#388E3C' },
+    { start: 3276800000, end: 3440640000, label: '19', color: '#36A2EB' },
+    { start: 3440640000, end: 3604480000, label: '20', color: '#4FC3F7' },
+    { start: 3604480000, end: 3768320000, label: '21', color: '#81D4FA' },
+    { start: 3768320000, end: 3932160000, label: '22', color: '#B3E5FC' },
+    { start: 3932160000, end: 4096000000, label: '23', color: '#E1F5FE' },
+    { start: 4096000000, end: 4259840000, label: '24', color: '#BA68C8' },
+    { start: 4259840000, end: 4423680000, label: '25', color: '#CE93D8' },
+    { start: 4423680000, end: 4587520000, label: '26', color: '#F06292' },
+    { start: 4587520000, end: 4751360000, label: '27', color: '#F48FB1' },
+    { start: 4751360000, end: 4915200000, label: '28', color: '#F8BBD0' }
+  ];
+
+  @ViewChild('scrollContainer', { static: false }) private scrollContainer?: ElementRef<HTMLDivElement>;
+  @ViewChild('patoshiTracker', { static: false }) patoshiTrackerRef?: ElementRef<HTMLDivElement>;
+
+  constructor(private persistenceService: PersistenceService) {}
 
   ngOnInit(): void {
-    // DEV NOTE: Load persisted data on component initialization to maintain state across screen changes.
     this.coreMap = this.persistenceService.loadCoreMap();
     const { tasks, highestDiffTask } = this.persistenceService.loadMiningTasks();
     this.miningTasks = tasks;
@@ -114,19 +158,16 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     this.updateTopCores();
     this.recalculateBestCore();
 
-    // DEV NOTE: Populate the cores array for the heatmap, representing all 896 cores (112 big x 8 small).
     for (let b = 0; b < 112; b++) {
       for (let s = 0; s < 8; s++) {
         this.cores.push({ big: b, small: s });
       }
     }
 
-    // DEV NOTE: Establish WebSocket connection based on the current protocol (ws/wss).
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl = `${protocol}://${window.location.host}/api/ws`;
     this.ws = new WebSocket(wsUrl);
 
-    // DEV NOTE: WebSocket event handlers for connection lifecycle and message handling.
     this.ws.onopen = () => console.log('WebSocket connected');
     this.ws.onmessage = (event) => {
       const text = event.data as string;
@@ -136,7 +177,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     this.ws.onerror = (error) => console.error('WebSocket error:', error);
     this.ws.onclose = () => console.log('WebSocket closed');
 
-    // DEV NOTE: Initialize Chart.js data for the scatter plot of share difficulties.
     this.chartData = {
       datasets: [{
         label: 'Difficulty',
@@ -148,7 +188,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       }]
     };
 
-    // DEV NOTE: Chart options include a logarithmic y-axis for wide-ranging difficulties and time-based x-axis.
     this.chartOptions = {
       responsive: true,
       maintainAspectRatio: false,
@@ -169,17 +208,96 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
         }
       }
     };
+
+    this.patoshiChartData = {
+      datasets: [{
+        label: 'Best Share per Core in Patoshi Ranges',
+        data: [],
+        backgroundColor: (context: any) => {
+          const tracker = this.patoshiTrackers[context.dataIndex];
+          const range = this.patoshiRanges.find(r => tracker.rangeStart === r.start && tracker.rangeEnd === r.end);
+          return range ? range.color : '#FF6384';
+        },
+        borderColor: '#FF6384',
+        pointRadius: 5
+      }]
+    };
+
+    this.patoshiChartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { title: { display: true, text: 'Core ID' }, type: 'category' },
+        y: { 
+          title: { display: true, text: 'Nonce Value' },
+          ticks: { callback: (value: number) => `${(value / 1e6).toFixed(1)}M` }
+        }
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (context: any) => {
+              const tracker = this.patoshiTrackers[context.dataIndex];
+              return `Core: ${tracker.coreId}, Nonce: ${tracker.bestNonce}, Range: ${tracker.rangeStart}-${tracker.rangeEnd}`;
+            }
+          }
+        }
+      }
+    };
   }
 
   ngOnDestroy(): void {
-    // DEV NOTE: Close WebSocket and save state to persistence when the component is destroyed (e.g., screen change).
     if (this.ws) this.ws.close();
     this.persistenceService.saveCoreMap(this.coreMap);
     this.persistenceService.saveMiningTasks(this.miningTasks, this.highestDiffTask);
   }
 
+  startResize(event: MouseEvent): void {
+    this.isResizing = true;
+    event.preventDefault();
+  }
+
+  @HostListener('document:mousemove', ['$event'])
+  onMouseMove(event: MouseEvent): void {
+    if (this.isResizing && this.patoshiTrackerRef) {
+      const trackerElement = this.patoshiTrackerRef.nativeElement;
+      const newHeight = event.clientY - trackerElement.getBoundingClientRect().top;
+      this.trackerHeight = Math.max(100, Math.min(600, newHeight));
+    }
+  }
+
+  @HostListener('document:mouseup')
+  onMouseUp(): void {
+    this.isResizing = false;
+  }
+
+  scaleTracker(delta: number): void {
+    this.trackerScale = Math.max(0.5, Math.min(2.0, this.trackerScale + delta));
+  }
+
+  toggleRangeFilter(event: Event): void {
+    const target = event.target as HTMLSelectElement;
+    this.selectedRange = target.value === '' ? null : target.value;
+  }
+
+  getFilteredTrackers(): PatoshiTracker[] {
+    if (!this.selectedRange) return this.patoshiTrackers;
+    const range = this.patoshiRanges.find(r => r.label === this.selectedRange);
+    return range 
+      ? this.patoshiTrackers.filter(t => t.rangeStart === range.start && t.rangeEnd === range.end)
+      : this.patoshiTrackers;
+  }
+
+  getTrackerBorderColor(tracker: PatoshiTracker): string {
+    const range = this.patoshiRanges.find(r => r.start === tracker.rangeStart && r.end === tracker.rangeEnd);
+    return range ? range.color : '#666';
+  }
+
+  formatRangeValue(value: number): string {
+    return (value / 1e6).toFixed(1) + 'M';
+  }
+
   private recalculateBestCore(): void {
-    // DEV NOTE: Recalculate the best core based on highest difficulty in coreMap.
     this.bestDiff = 0;
     this.bestCoreId = null;
     for (const coreId in this.coreMap) {
@@ -192,12 +310,10 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private handleIncomingLog(rawLine: string): void {
-    // DEV NOTE: Main entry point for processing incoming WebSocket messages.
     const parsed = this.parseLogLine(rawLine);
     this.lines.push(parsed);
-    if (this.lines.length > 100) this.lines.shift(); // DEV NOTE: Cap log lines at 100 to prevent memory issues.
+    if (this.lines.length > 100) this.lines.shift();
 
-    // DEV NOTE: Reset all state on system restart, detected by a specific log message.
     if (rawLine.includes('Restarting System because of API Request')) {
       this.persistenceService.clearCoreMap();
       this.persistenceService.clearMiningTasks();
@@ -210,10 +326,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       this.notifyMap = {};
       this.miningTasks = [];
       this.highestDiffTask = null;
+      this.patoshiTrackers = [];
       this.chartData.datasets[0].data = this.shareScatter;
+      this.patoshiChartData.datasets[0].data = [];
     }
 
-    // DEV NOTE: Parse JSON-formatted mining.notify messages to populate notifyMap.
     try {
       const jsonData = JSON.parse(rawLine);
       if (jsonData.method === 'mining.notify' && jsonData.params) {
@@ -230,25 +347,52 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
         this.notifyMap[notify.jobId] = notify;
         console.log('Mining notify received (JSON):', notify);
       }
-    } catch (e) {
-      // DEV NOTE: If not JSON, proceed with regular log parsing below.
-    }
+    } catch (e) {}
 
     this.updateCoreInfo(parsed);
     this.updateMiningTasks(parsed);
+    this.updatePatoshiTracker(rawLine);
 
-    // DEV NOTE: Log best core details for debugging, capped at 50 lines.
     if (this.bestCoreId && parsed.core === this.bestCoreId) {
       this.bestCoreDetailLines.push(rawLine);
       if (this.bestCoreDetailLines.length > 50) this.bestCoreDetailLines.shift();
     }
 
-    // DEV NOTE: Scroll to the bottom of the log container with a slight delay to ensure DOM updates.
     setTimeout(() => this.scrollToBottom(), 20);
   }
 
+  private updatePatoshiTracker(rawLine: string): void {
+    const patoshiMatch = /Patoshi hit: Core (\d+), Nonce (\d+), Range \[(\d+)-(\d+)\]/.exec(rawLine);
+    if (patoshiMatch) {
+      const coreId = `${patoshiMatch[1]}/0`;
+      const nonce = patoshiMatch[2];
+      const rangeStart = parseInt(patoshiMatch[3]);
+      const rangeEnd = parseInt(patoshiMatch[4]);
+      
+      const existing = this.patoshiTrackers.find(t => t.coreId === coreId);
+      if (existing) {
+        existing.bestNonce = nonce;
+        existing.rangeStart = rangeStart;
+        existing.rangeEnd = rangeEnd;
+        existing.nonceCount++;
+      } else {
+        this.patoshiTrackers.push({
+          coreId,
+          bestNonce: nonce,
+          rangeStart,
+          rangeEnd,
+          nonceCount: 1
+        });
+      }
+
+      this.patoshiChartData.datasets[0].data = this.patoshiTrackers.map(t => ({
+        x: t.coreId,
+        y: parseInt(t.bestNonce)
+      }));
+    }
+  }
+
   private updateMiningTasks(parsed: ParsedLine): void {
-    // DEV NOTE: Handle job info, ASIC results, and share submissions to build the miningTasks list.
     if (parsed.category === 'jobInfo') {
       this.lastJob = { jobId: parsed.jobId, version: parsed.version, coreId: parsed.core };
       console.log('Last job updated:', this.lastJob);
@@ -256,7 +400,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       this.lastAsicResult = parsed;
       console.log('ASIC result stored temporarily:', parsed);
     } else if (parsed.category === 'share_submitted') {
-      // DEV NOTE: Prevent duplicate shares within 1 second based on nonce.
       if (!this.miningTasks.some(t => t.nonce === parsed.nonce && t.timestamp > Date.now() - 1000)) {
         const task: MiningTask = {
           jobId: parsed.jobId,
@@ -275,7 +418,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
           username: parsed.username,
           extranonce2: parsed.extranonce2
         };
-        // DEV NOTE: Enrich task with data from notifyMap if available.
+
+        const nonceNum = parseInt(task.nonce, 16);
+        const range = this.patoshiRanges.find(r => nonceNum >= r.start && nonceNum <= r.end);
+        if (range) task.patoshiRange = range.label;
+
         const notify = this.notifyMap[task.jobId];
         if (notify) {
           task.prevBlockHash = notify.prevBlockHash || task.prevBlockHash;
@@ -285,26 +432,20 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
           task.merkleBranches = notify.merkleBranches || task.merkleBranches;
           task.ntime = parsed.ntime || notify.ntime;
           task.target = notify.target || task.target;
-        } else {
-          console.warn(`No notify data found for job ${task.jobId} in notifyMap`);
         }
 
-        // DEV NOTE: Update highestDiffTask if this task has a higher difficulty.
         if (!this.highestDiffTask || task.difficulty > this.highestDiffTask.difficulty) {
-          this.highestDiffTask = { ...task }; // Clone to avoid reference issues
+          this.highestDiffTask = { ...task };
         }
 
-        // DEV NOTE: Add new task and ensure highest difficulty task stays at the top.
         this.miningTasks.unshift(task);
-        this.miningTasks = this.miningTasks.filter(t => t !== this.highestDiffTask); // Remove highest if it’s elsewhere
-        this.miningTasks.unshift(this.highestDiffTask); // Add it back at the top
+        this.miningTasks = this.miningTasks.filter(t => t !== this.highestDiffTask);
+        this.miningTasks.unshift(this.highestDiffTask);
         
-        // DEV NOTE: Limit to 10 tasks, including the highest difficulty one.
         if (this.miningTasks.length > 10) {
           this.miningTasks = this.miningTasks.slice(0, 10);
         }
 
-        // DEV NOTE: Persist miningTasks and highestDiffTask to localStorage for screen persistence.
         this.persistenceService.saveMiningTasks(this.miningTasks, this.highestDiffTask);
 
         console.log('New mining task from share_submitted:', task);
@@ -314,8 +455,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private parseLogLine(rawLine: string): ParsedLine {
-    // DEV NOTE: Parse raw log lines into structured ParsedLine objects based on content.
-    const noAnsi = rawLine.replace(/\x1b\[[0-9;]*m/g, ''); // Remove ANSI color codes
+    const noAnsi = rawLine.replace(/\x1b\[[0-9;]*m/g, '');
     const time = new Date().toLocaleTimeString();
 
     const line: ParsedLine = {
@@ -342,7 +482,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       stratumJobId: undefined
     };
 
-    // DEV NOTE: Pattern matching for various log types; order matters for specificity.
     if (noAnsi.includes('Mining Notify - Job ID:')) {
       line.category = 'mining_notify';
       const jobIdMatch = /Job ID:\s*([0-9A-Fa-f]+)/.exec(noAnsi);
@@ -477,7 +616,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private getColorForDiff(diff: number, isBest: boolean): string {
-    // DEV NOTE: Assigns colors to difficulty ranges for scatter plot visualization.
     if (diff <= 200) return '#4B0000';
     if (diff <= 500) return '#8B0000';
     if (diff <= 1000) return '#A30000';
@@ -498,7 +636,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private getRadiusForDiff(diff: number): number {
-    // DEV NOTE: Calculates scatter point radius based on logarithmic difficulty for better visualization.
     const logDiff = Math.log10(diff);
     const minLog = Math.log10(100);
     const maxLog = Math.log10(1e11);
@@ -507,7 +644,6 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private updateCoreInfo(line: ParsedLine): void {
-    // DEV NOTE: Updates coreMap with new ASIC results paired with jobInfo.
     if (line.category === 'asic_result') {
       this.lastAsicResult = line;
       return;
@@ -544,7 +680,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
           color: this.getColorForDiff(highestDiff, isBest),
           radius: this.getRadiusForDiff(diffVal)
         });
-        if (this.shareScatter.length > 300) this.shareScatter.shift(); // DEV NOTE: Cap scatter points at 300.
+        if (this.shareScatter.length > 300) this.shareScatter.shift();
 
         this.lastAsicResult = null;
       } else {
@@ -562,14 +698,12 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private updateTopCores(): void {
-    // DEV NOTE: Maintains a list of the top 5 cores by highest difficulty.
     this.topCores = Object.values(this.coreMap)
       .sort((a, b) => b.highestDiff - a.highestDiff)
       .slice(0, 5);
   }
 
   public getCoreInfo(big: number, small: number): CoreInfo {
-    // DEV NOTE: Retrieves or initializes core info for heatmap display.
     const key = `${big}/${small}`;
     return this.coreMap[key] || {
       coreId: key,
@@ -582,14 +716,12 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   public getCoreTitle(big: number, small: number): string {
-    // DEV NOTE: Formats tooltip text for heatmap cells.
     const info = this.getCoreInfo(big, small);
     if (!info.lastNonce) return `Core ${info.coreId}\nNo Data Yet`;
     return `Core ${info.coreId}\nNonce=${info.lastNonce}\nHighest Diff=${info.highestDiff.toFixed(1)}\nLast Diff=${info.lastDiff.toFixed(1)}/${info.lastDiffMax.toFixed(1)}\nLastSeen=${info.lastTime}`;
   }
 
   public getCoreClass(big: number, small: number): string {
-    // DEV NOTE: Determines CSS classes for heatmap cells based on difficulty and status.
     const info = this.getCoreInfo(big, small);
     const diff = info.highestDiff;
     const isBest = this.bestCoreId === info.coreId;
@@ -623,13 +755,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   public getBestCoreLabel(): string {
-    // DEV NOTE: Displays the best core info in the UI.
     if (!this.bestCoreId) return 'No best core yet';
     return `Best Core: ${this.bestCoreId} (Diff=${this.bestDiff.toFixed(1)})`;
   }
 
   private scrollToBottom(): void {
-    // DEV NOTE: Auto-scrolls the log container to the latest entry.
     if (this.scrollContainer?.nativeElement) {
       const el = this.scrollContainer.nativeElement;
       el.scrollTop = el.scrollHeight;
@@ -637,29 +767,24 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   public formatHex(hex: string | undefined, maxLength: number = 16): string {
-    // DEV NOTE: Formats hex strings for display, truncating long values with ellipsis.
     if (!hex) return 'N/A';
     return hex.length > maxLength ? `${hex.slice(0, maxLength / 2)}...${hex.slice(-maxLength / 2)}` : hex;
   }
 
   public formatMerkleBranches(branches: string[] | undefined): string {
-    // DEV NOTE: Formats Merkle branches into a comma-separated string for display.
     if (!branches || branches.length === 0) return '';
     return branches.map(b => this.formatHex(b, 16)).join(', ');
   }
 
   public trackByJobId(index: number, task: MiningTask): string {
-    // DEV NOTE: Unique identifier for ngFor to optimize DOM updates.
     return `${task.jobId}-${task.coreId}-${task.timestamp}`;
   }
 
   public isNewTask(task: MiningTask): boolean {
-    // DEV NOTE: Highlights tasks submitted within the last 2 seconds.
     return (Date.now() - task.timestamp) < 2000;
   }
 
   public isHighestDiffTask(task: MiningTask): boolean {
-    // DEV NOTE: Identifies the highest difficulty task for special styling in the UI.
     return this.highestDiffTask === task;
   }
 }
