@@ -30,6 +30,8 @@ import { MessageModule } from 'primeng/message';
 import { TooltipModule } from 'primeng/tooltip';
 import { MiningMatrixComponent } from './components/mining-matrix/mining-matrix.component';
 import { PersistenceService } from './persistence.service';
+import { Chart } from 'chart.js';
+import 'chartjs-plugin-zoom';
 
 const components = [
   AppComponent,
