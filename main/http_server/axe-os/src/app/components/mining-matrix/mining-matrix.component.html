@@ -1,4 +1,4 @@
-<div class="matrix-container" #scrollContainer>
+<div class="matrix-container" #scrollContainer [style.height.px]="matrixHeight">
   <div class="matrix-line" *ngFor="let line of lines">
     <span class="time-stamp">[{{ line.time }}]</span>
     <span *ngIf="line.category === 'asic_result'; else fallback">
@@ -50,23 +50,25 @@
       </ng-container>
     </ng-template>
   </div>
+  <div class="resize-handle" (mousedown)="startResize($event, 'matrix')"></div>
 </div>
 
 <div class="best-core-stats">
   <div class="best-core-info">
     {{ getBestCoreLabel() }}
   </div>
-  <div class="best-core-logs" *ngIf="bestCoreId !== null">
+  <div class="best-core-logs" #bestCoreLogs [style.height.px]="bestCoreLogsHeight" *ngIf="bestCoreId !== null">
     <h4>Live Debug For {{ bestCoreId }}</h4>
     <div class="best-core-logs-container">
       <div *ngFor="let l of bestCoreDetailLines">
         {{ l }}
       </div>
     </div>
+    <div class="resize-handle" (mousedown)="startResize($event, 'bestCoreLogs')"></div>
   </div>
 </div>
 
-<div class="mining-pipeline">
+<div class="mining-pipeline" #pipelineContainer [style.height.px]="pipelineHeight">
   <h3>Submitted Shares Pipeline</h3>
   <div class="pipeline-container">
     <div class="pipeline-track">
@@ -100,6 +102,7 @@
       </div>
     </div>
   </div>
+  <div class="resize-handle" (mousedown)="startResize($event, 'pipeline')"></div>
 </div>
 
 <div class="patoshi-tracker" #patoshiTracker [style.height.px]="trackerHeight">
@@ -126,7 +129,7 @@
       No Patoshi range hits {{ selectedRange ? 'for range ' + selectedRange : 'yet' }}
     </div>
   </div>
-  <div class="resize-handle" (mousedown)="startResize($event)"></div>
+  <div class="resize-handle" (mousedown)="startResize($event, 'patoshi')"></div>
 </div>
 
 <div class="heatmap">
@@ -198,6 +201,7 @@
 <div class="card patoshi-chart-container">
   <h3>Patoshi Range Distribution</h3>
   <p-chart
+    #patoshiChart
     type="scatter"
     [data]="patoshiChartData"
     [options]="patoshiChartOptions"
