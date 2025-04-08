@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <inttypes.h> // Added for PRIu32 and PRIu64 macros
+#include <inttypes.h>
 
 #define GPIO_ASIC_RESET CONFIG_GPIO_ASIC_RESET
 #define TYPE_JOB 0x20
@@ -38,40 +38,38 @@
 #define BM1366_TIMEOUT_MS 10000
 #define BM1366_TIMEOUT_THRESHOLD 2
 
-// Patoshi Range Definitions
-#define PUNIT_SIZE (0x4000 * 10000) // 163840000 nonces
-#define SUBRANGE_SIZE (10 * PUNIT_SIZE)
+#define PUNIT_SIZE (0x4000 * 10000ULL)
+#define SUBRANGE_SIZE (10 * PUNIT_SIZE) // 400M nonce range per job
 typedef struct {
-    uint64_t start_nonce; // Changed to uint64_t to handle large values
-    uint64_t end_nonce;   // Changed to uint64_t to handle large values
+    uint64_t start_nonce;
+    uint64_t end_nonce;
     uint8_t is_patoshi;
 } PatoshiRange;
 
 static const PatoshiRange PATOSHI_RANGES[] = {
-    // [0..9] Subrange
     {0ULL, 163840000ULL, 1}, {163840000ULL, 327680000ULL, 1}, {327680000ULL, 491520000ULL, 1},
     {491520000ULL, 655360000ULL, 1}, {655360000ULL, 819200000ULL, 1}, {819200000ULL, 983040000ULL, 1},
     {983040000ULL, 1146880000ULL, 1}, {1146880000ULL, 1310720000ULL, 1}, {1310720000ULL, 1474560000ULL, 1},
     {1474560000ULL, 1638400000ULL, 1},
-    // [19..28] Subrange
-    {3276800000ULL, 3440640000ULL, 1}, {3440640000ULL, 3604480000ULL, 1}, {3604480000ULL, 3768320000ULL, 1},
-    {3768320000ULL, 3932160000ULL, 1}, {3932160000ULL, 4096000000ULL, 1}, {4096000000ULL, 4259840000ULL, 1},
-    {4259840000ULL, 4423680000ULL, 1}, {4423680000ULL, 4587520000ULL, 1}, {4587520000ULL, 4751360000ULL, 1},
-    {4751360000ULL, 4915200000ULL, 1}
+    {1638400000ULL, 1802240000ULL, 0}, {1802240000ULL, 1966080000ULL, 0}, {1966080000ULL, 2129920000ULL, 0},
+    {2129920000ULL, 2293760000ULL, 0}, {2293760000ULL, 2457600000ULL, 0}, {2457600000ULL, 2621440000ULL, 0},
+    {2621440000ULL, 2785280000ULL, 0}, {2785280000ULL, 2949120000ULL, 0}, {2949120000ULL, 3112960000ULL, 0},
+    {3112960000ULL, 3276800000ULL, 1}, {3276800000ULL, 3440640000ULL, 1}, {3440640000ULL, 3604480000ULL, 1},
+    {3604480000ULL, 3768320000ULL, 1}, {3768320000ULL, 3932160000ULL, 1}, {3932160000ULL, 4096000000ULL, 1},
+    {4096000000ULL, 4259840000ULL, 1}, {4259840000ULL, 4423680000ULL, 1}, {4423680000ULL, 4587520000ULL, 1},
+    {4587520000ULL, 4751360000ULL, 1}, {4751360000ULL, 4294967295ULL, 0}
 };
 #define NUM_PATOSHI_RANGES (sizeof(PATOSHI_RANGES) / sizeof(PatoshiRange))
 
 typedef struct {
     uint8_t core_id;
-    uint32_t best_nonce; // Kept as uint32_t since it's derived from asic_result
+    uint32_t best_nonce;
     uint32_t best_range_index;
     uint64_t nonce_count;
 } CorePatoshiStats;
 
-static CorePatoshiStats core_stats[112]; // Assuming 112 big cores
-
-typedef struct __attribute__((__packed__))
-{
+static CorePatoshiStats core_stats[112];
+typedef struct __attribute__((__packed__)) {
     uint8_t preamble[2];
     uint32_t nonce;
     uint8_t midstate_num;
@@ -81,15 +79,14 @@ typedef struct __attribute__((__packed__))
 } asic_result;
 
 static float current_frequency = 56.25;
-static const char * TAG = "bm1366Module";
+static const char *TAG = "bm1366Module";
 static uint8_t asic_response_buffer[SERIAL_BUF_SIZE];
 static task_result result;
 
-static void _send_BM1366(uint8_t header, uint8_t * data, uint8_t data_len, bool debug)
-{
+static void _send_BM1366(uint8_t header, uint8_t *data, uint8_t data_len, bool debug) {
     packet_type_t packet_type = (header & TYPE_JOB) ? JOB_PACKET : CMD_PACKET;
     uint8_t total_length = (packet_type == JOB_PACKET) ? (data_len + 6) : (data_len + 5);
-    unsigned char * buf = malloc(total_length);
+    unsigned char *buf = malloc(total_length);
     buf[0] = 0x55;
     buf[1] = 0xAA;
     buf[2] = header;
@@ -106,37 +103,32 @@ static void _send_BM1366(uint8_t header, uint8_t * data, uint8_t data_len, bool 
     free(buf);
 }
 
-static void _send_simple(uint8_t * data, uint8_t total_length)
-{
-    unsigned char * buf = malloc(total_length);
+static void _send_simple(uint8_t *data, uint8_t total_length) {
+    unsigned char *buf = malloc(total_length);
     memcpy(buf, data, total_length);
     SERIAL_send(buf, total_length, BM1366_SERIALTX_DEBUG);
     free(buf);
 }
 
-static void _send_chain_inactive(void)
-{
+static void _send_chain_inactive(void) {
     unsigned char read_address[2] = {0x00, 0x00};
     _send_BM1366((TYPE_CMD | GROUP_ALL | CMD_INACTIVE), read_address, 2, BM1366_SERIALTX_DEBUG);
 }
 
-static void _set_chip_address(uint8_t chipAddr)
-{
+static void _set_chip_address(uint8_t chipAddr) {
     unsigned char read_address[2] = {chipAddr, 0x00};
     _send_BM1366((TYPE_CMD | GROUP_SINGLE | CMD_SETADDRESS), read_address, 2, BM1366_SERIALTX_DEBUG);
 }
 
-void BM1366_set_version_mask(uint32_t version_mask) 
-{
+void BM1366_set_version_mask(uint32_t version_mask) {
     int versions_to_roll = version_mask >> 13;
     uint8_t version_byte0 = (versions_to_roll >> 8);
-    uint8_t version_byte1 = (versions_to_roll & 0xFF); 
+    uint8_t version_byte1 = (versions_to_roll & 0xFF);
     uint8_t version_cmd[] = {0x00, 0xA4, 0x90, 0x00, version_byte0, version_byte1};
     _send_BM1366(TYPE_CMD | GROUP_ALL | CMD_WRITE, version_cmd, 6, BM1366_SERIALTX_DEBUG);
 }
 
-void BM1366_send_hash_frequency(float target_freq)
-{
+void BM1366_send_hash_frequency(float target_freq) {
     unsigned char freqbuf[9] = {0x00, 0x08, 0x40, 0xA0, 0x02, 0x41};
     float newf = 200.0;
     uint8_t fb_divider = 0;
@@ -147,9 +139,9 @@ void BM1366_send_hash_frequency(float target_freq)
     for (uint8_t refdiv_loop = 2; refdiv_loop > 0 && fb_divider == 0; refdiv_loop--) {
         for (uint8_t postdiv1_loop = 7; postdiv1_loop > 0 && fb_divider == 0; postdiv1_loop--) {
             for (uint8_t postdiv2_loop = 1; postdiv2_loop < postdiv1_loop && fb_divider == 0; postdiv2_loop++) {
-                int temp_fb_divider = round(((float) (postdiv1_loop * postdiv2_loop * target_freq * refdiv_loop) / 25.0));
+                int temp_fb_divider = round(((float)(postdiv1_loop * postdiv2_loop * target_freq * refdiv_loop) / 25.0));
                 if (temp_fb_divider >= 144 && temp_fb_divider <= 235) {
-                    float temp_freq = 25.0 * (float) temp_fb_divider / (float) (refdiv_loop * postdiv2_loop * postdiv1_loop);
+                    float temp_freq = 25.0 * (float)temp_fb_divider / (float)(refdiv_loop * postdiv2_loop * postdiv1_loop);
                     float freq_diff = fabs(target_freq - temp_freq);
                     if (freq_diff < min_difference) {
                         fb_divider = temp_fb_divider;
@@ -167,17 +159,18 @@ void BM1366_send_hash_frequency(float target_freq)
     if (fb_divider == 0) {
         puts("Finding dividers failed, using default value (200Mhz)");
     } else {
-        newf = 25.0 * (float) (fb_divider) / (float) (ref_divider * post_divider1 * post_divider2);
+        newf = 25.0 * (float)(fb_divider) / (float)(ref_divider * post_divider1 * post_divider2);
         freqbuf[3] = fb_divider;
         freqbuf[4] = ref_divider;
         freqbuf[5] = (((post_divider1 - 1) & 0xf) << 4) + ((post_divider2 - 1) & 0xf);
-        if (fb_divider * 25 / (float) ref_divider >= 2400) {
+        if (fb_divider * 25 / (float)ref_divider >= 2400) {
             freqbuf[2] = 0x50;
         }
     }
 
     _send_BM1366((TYPE_CMD | GROUP_ALL | CMD_WRITE), freqbuf, 6, BM1366_SERIALTX_DEBUG);
     ESP_LOGI(TAG, "Setting Frequency to %.2fMHz (%.2f)", target_freq, newf);
+    current_frequency = newf;
 }
 
 static void do_frequency_ramp_up(float target_frequency) {
@@ -187,12 +180,7 @@ static void do_frequency_ramp_up(float target_frequency) {
     float direction = (target > current) ? step : -step;
 
     if (fmod(current, step) != 0) {
-        float next_dividable;
-        if (direction > 0) {
-            next_dividable = ceil(current / step) * step;
-        } else {
-            next_dividable = floor(current / step) * step;
-        }
+        float next_dividable = (direction > 0) ? ceil(current / step) * step : floor(current / step) * step;
         current = next_dividable;
         BM1366_send_hash_frequency(current);
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -205,11 +193,9 @@ static void do_frequency_ramp_up(float target_frequency) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
     BM1366_send_hash_frequency(target);
-    return;
 }
 
-static uint8_t _send_init(uint64_t frequency, uint16_t asic_count)
-{
+static uint8_t _send_init(uint64_t frequency, uint16_t asic_count) {
     memset(core_stats, 0, sizeof(core_stats));
     
     for (int i = 0; i < 3; i++) {
@@ -220,7 +206,7 @@ static uint8_t _send_init(uint64_t frequency, uint16_t asic_count)
 
     int chip_counter = 0;
     while (true) {
-        if(SERIAL_rx(asic_response_buffer, 11, 1000) > 0) {
+        if (SERIAL_rx(asic_response_buffer, 11, 1000) > 0) {
             chip_counter++;
         } else {
             break;
@@ -234,7 +220,7 @@ static uint8_t _send_init(uint64_t frequency, uint16_t asic_count)
     _send_simple(init5, 11);
     _send_chain_inactive();
 
-    uint8_t address_interval = (uint8_t) (256 / chip_counter);
+    uint8_t address_interval = (uint8_t)(256 / chip_counter);
     for (uint8_t i = 0; i < chip_counter; i++) {
         _set_chip_address(i * address_interval);
     }
@@ -275,16 +261,14 @@ static uint8_t _send_init(uint64_t frequency, uint16_t asic_count)
     return chip_counter;
 }
 
-static void _reset(void)
-{
+static void _reset(void) {
     gpio_set_level(GPIO_ASIC_RESET, 0);
     vTaskDelay(100 / portTICK_PERIOD_MS);
     gpio_set_level(GPIO_ASIC_RESET, 1);
     vTaskDelay(100 / portTICK_PERIOD_MS);
 }
 
-uint8_t BM1366_init(uint64_t frequency, uint16_t asic_count)
-{
+uint8_t BM1366_init(uint64_t frequency, uint16_t asic_count) {
     ESP_LOGI(TAG, "Initializing BM1366");
     memset(asic_response_buffer, 0, SERIAL_BUF_SIZE);
     esp_rom_gpio_pad_select_gpio(GPIO_ASIC_RESET);
@@ -293,23 +277,20 @@ uint8_t BM1366_init(uint64_t frequency, uint16_t asic_count)
     return _send_init(frequency, asic_count);
 }
 
-int BM1366_set_default_baud(void)
-{
+int BM1366_set_default_baud(void) {
     unsigned char baudrate[9] = {0x00, MISC_CONTROL, 0x00, 0x00, 0b01111010, 0b00110001};
     _send_BM1366((TYPE_CMD | GROUP_ALL | CMD_WRITE), baudrate, 6, BM1366_SERIALTX_DEBUG);
     return 115749;
 }
 
-int BM1366_set_max_baud(void)
-{
+int BM1366_set_max_baud(void) {
     ESP_LOGI(TAG, "Setting max baud of 1000000");
     unsigned char reg28[11] = {0x55, 0xAA, 0x51, 0x09, 0x00, 0x28, 0x11, 0x30, 0x02, 0x00, 0x03};
     _send_simple(reg28, 11);
     return 1000000;
 }
 
-void BM1366_set_job_difficulty_mask(int difficulty)
-{
+void BM1366_set_job_difficulty_mask(int difficulty) {
     unsigned char job_difficulty_mask[9] = {0x00, TICKET_MASK, 0b00000000, 0b00000000, 0b00000000, 0b11111111};
     difficulty = _largest_power_of_two(difficulty) - 1;
 
@@ -324,16 +305,20 @@ void BM1366_set_job_difficulty_mask(int difficulty)
 
 static uint8_t id = 0;
 
-void BM1366_send_work(void * pvParameters, bm_job * next_bm_job)
-{
-    GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
+void BM1366_send_work(void *pvParameters, bm_job *next_bm_job) {
+    GlobalState *GLOBAL_STATE = (GlobalState *)pvParameters;
 
     BM1366_job job;
     id = (id + 8) % 128;
     job.job_id = id;
     job.num_midstates = 0x01;
-    uint32_t optimal_start = 1474560000;
+
+    // Randomize starting_nonce across the full 32-bit nonce space, aligned to SUBRANGE_SIZE
+    uint32_t max_starts = (4294967295ULL / SUBRANGE_SIZE) + 1; // Number of 400M chunks
+    uint32_t random_start_index = rand() % max_starts;
+    uint32_t optimal_start = random_start_index * SUBRANGE_SIZE;
     memcpy(&job.starting_nonce, &optimal_start, 4);
+
     memcpy(&job.nbits, &next_bm_job->target, 4);
     memcpy(&job.ntime, &next_bm_job->ntime, 4);
     memcpy(job.merkle_root, next_bm_job->merkle_root_be, 32);
@@ -349,15 +334,14 @@ void BM1366_send_work(void * pvParameters, bm_job * next_bm_job)
     GLOBAL_STATE->valid_jobs[job.job_id] = 1;
     pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
 
-    #if BM1366_DEBUG_JOBS
+#if BM1366_DEBUG_JOBS
     ESP_LOGI(TAG, "Send Job: %02X (Patoshi range: %" PRIu32 "-%" PRIu32 ")", job.job_id, optimal_start, optimal_start + SUBRANGE_SIZE);
-    #endif
+#endif
 
     _send_BM1366((TYPE_JOB | GROUP_SINGLE | CMD_WRITE), (uint8_t *)&job, sizeof(BM1366_job), BM1366_DEBUG_WORK);
 }
 
-asic_result * BM1366_receive_work(void)
-{
+asic_result *BM1366_receive_work(void) {
     int received = SERIAL_rx(asic_response_buffer, 11, BM1366_TIMEOUT_MS);
 
     bool uart_err = received < 0;
@@ -383,22 +367,19 @@ asic_result * BM1366_receive_work(void)
         return NULL;
     }
 
-    return (asic_result *) asic_response_buffer;
+    return (asic_result *)asic_response_buffer;
 }
 
-static uint16_t reverse_uint16(uint16_t num)
-{
+static uint16_t reverse_uint16(uint16_t num) {
     return (num >> 8) | (num << 8);
 }
 
-static uint32_t reverse_uint32(uint32_t val)
-{
+static uint32_t reverse_uint32(uint32_t val) {
     return ((val >> 24) & 0xff) | ((val << 8) & 0xff0000) | ((val >> 8) & 0xff00) | ((val << 24) & 0xff000000);
 }
 
-task_result * BM1366_proccess_work(void * pvParameters)
-{
-    asic_result * asic_result = BM1366_receive_work();
+task_result *BM1366_proccess_work(void *pvParameters) {
+    asic_result *asic_result = BM1366_receive_work();
 
     if (asic_result == NULL) {
         return NULL;
@@ -409,11 +390,13 @@ task_result * BM1366_proccess_work(void * pvParameters)
     uint8_t small_core_id = asic_result->job_id & 0x07;
     uint32_t version_bits = (reverse_uint16(asic_result->version) << 13);
 
-    // Update Patoshi stats
     uint32_t nonce = reverse_uint32(asic_result->nonce);
     core_stats[core_id].nonce_count++;
     for (int i = 0; i < NUM_PATOSHI_RANGES; i++) {
         if ((uint64_t)nonce >= PATOSHI_RANGES[i].start_nonce && (uint64_t)nonce < PATOSHI_RANGES[i].end_nonce) {
+            // Log all hits, not just Patoshi ones
+            ESP_LOGI(TAG, "Range hit: Core %d, Nonce %" PRIu32 ", Range %d [%" PRIu64 "-%" PRIu64 "], Patoshi: %d",
+                     core_id, nonce, i, PATOSHI_RANGES[i].start_nonce, PATOSHI_RANGES[i].end_nonce, PATOSHI_RANGES[i].is_patoshi);
             if (PATOSHI_RANGES[i].is_patoshi) {
                 core_stats[core_id].best_nonce = nonce;
                 core_stats[core_id].best_range_index = i;
@@ -426,7 +409,7 @@ task_result * BM1366_proccess_work(void * pvParameters)
 
     ESP_LOGI(TAG, "Job ID: %02X, Core: %d/%d, Ver: %08" PRIX32, job_id, core_id, small_core_id, version_bits);
 
-    GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
+    GlobalState *GLOBAL_STATE = (GlobalState *)pvParameters;
 
     if (GLOBAL_STATE->valid_jobs[job_id] == 0) {
         ESP_LOGE(TAG, "Invalid job found, 0x%02X", job_id);
