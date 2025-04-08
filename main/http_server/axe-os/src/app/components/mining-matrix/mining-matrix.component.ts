@@ -1,5 +1,6 @@
 import { Component, OnDestroy, OnInit, ElementRef, ViewChild, HostListener } from '@angular/core';
 import { PersistenceService } from '../../persistence.service';
+import { Chart } from 'chart.js';
 
 interface ParsedLine {
   raw: string;
@@ -77,6 +78,8 @@ interface PatoshiTracker {
   rangeStart: number;
   rangeEnd: number;
   nonceCount: number;
+  coreIndex: number; // New field for numeric x-axis
+  rangeIndex: number; // New field for numeric y-axis
 }
 
 interface PatoshiRange {
@@ -106,21 +109,25 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   private notifyMap: Record<string, MiningNotify> = {};
   private jobIdMap: Record<string, string> = {};
 
-  public totalCores = 896;
+  public totalCores = 896; // Initial estimate, will adjust dynamically
   public gridSize = Math.ceil(Math.sqrt(this.totalCores));
   public cores: { big: number; small: number }[] = [];
   public shareScatter: ScatterPoint[] = [];
   public patoshiTrackers: PatoshiTracker[] = [];
   public patoshiChartData: any;
   public patoshiChartOptions: any;
-
   public chartData: any;
   public chartOptions: any;
 
   public trackerHeight: number = 200;
+  public matrixHeight: number = 200; // New for matrix-container
+  public bestCoreLogsHeight: number = 150; // New for best-core-logs
+  public pipelineHeight: number = 500; // New for mining-pipeline
   public isResizing: boolean = false;
-  public trackerScale: number = 1.0;
-  public selectedRange: string | null = null;
+  public resizingSection: string | null = null; // Track which section is being resized
+  public trackerScale: number = 1.0; // Added missing property
+  public selectedRange: string | null = null; // Added missing property
+
 
   public patoshiRanges: PatoshiRange[] = [
     { start: 0, end: 163840000, label: '0', color: '#FF6384' },
@@ -133,20 +140,33 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     { start: 1146880000, end: 1310720000, label: '7', color: '#81C784' },
     { start: 1310720000, end: 1474560000, label: '8', color: '#4CAF50' },
     { start: 1474560000, end: 1638400000, label: '9', color: '#388E3C' },
-    { start: 3276800000, end: 3440640000, label: '19', color: '#36A2EB' },
-    { start: 3440640000, end: 3604480000, label: '20', color: '#4FC3F7' },
-    { start: 3604480000, end: 3768320000, label: '21', color: '#81D4FA' },
-    { start: 3768320000, end: 3932160000, label: '22', color: '#B3E5FC' },
-    { start: 3932160000, end: 4096000000, label: '23', color: '#E1F5FE' },
-    { start: 4096000000, end: 4259840000, label: '24', color: '#BA68C8' },
-    { start: 4259840000, end: 4423680000, label: '25', color: '#CE93D8' },
-    { start: 4423680000, end: 4587520000, label: '26', color: '#F06292' },
-    { start: 4587520000, end: 4751360000, label: '27', color: '#F48FB1' },
-    { start: 4751360000, end: 4915200000, label: '28', color: '#F8BBD0' }
+    { start: 1638400000, end: 1802240000, label: '10', color: '#B0BEC5' },
+    { start: 1802240000, end: 1966080000, label: '11', color: '#CFD8DC' },
+    { start: 1966080000, end: 2129920000, label: '12', color: '#ECEFF1' },
+    { start: 2129920000, end: 2293760000, label: '13', color: '#B0BEC5' },
+    { start: 2293760000, end: 2457600000, label: '14', color: '#CFD8DC' },
+    { start: 2457600000, end: 2621440000, label: '15', color: '#ECEFF1' },
+    { start: 2621440000, end: 2785280000, label: '16', color: '#B0BEC5' },
+    { start: 2785280000, end: 2949120000, label: '17', color: '#CFD8DC' },
+    { start: 2949120000, end: 3112960000, label: '18', color: '#ECEFF1' },
+    { start: 3112960000, end: 3276800000, label: '19', color: '#36A2EB' },
+    { start: 3276800000, end: 3440640000, label: '20', color: '#4FC3F7' },
+    { start: 3440640000, end: 3604480000, label: '21', color: '#81D4FA' },
+    { start: 3604480000, end: 3768320000, label: '22', color: '#B3E5FC' },
+    { start: 3768320000, end: 3932160000, label: '23', color: '#E1F5FE' },
+    { start: 3932160000, end: 4096000000, label: '24', color: '#BA68C8' },
+    { start: 4096000000, end: 4259840000, label: '25', color: '#CE93D8' },
+    { start: 4259840000, end: 4423680000, label: '26', color: '#F06292' },
+    { start: 4423680000, end: 4587520000, label: '27', color: '#F48FB1' },
+    { start: 4587520000, end: 4751360000, label: '28', color: '#F8BBD0' },
+    { start: 4751360000, end: 4294967295, label: '29', color: '#B0BEC5' }
   ];
 
   @ViewChild('scrollContainer', { static: false }) private scrollContainer?: ElementRef<HTMLDivElement>;
   @ViewChild('patoshiTracker', { static: false }) patoshiTrackerRef?: ElementRef<HTMLDivElement>;
+  @ViewChild('patoshiChart', { static: false }) patoshiChart?: ElementRef<HTMLCanvasElement>;
+  @ViewChild('bestCoreLogs', { static: false }) bestCoreLogsRef?: ElementRef<HTMLDivElement>; // New
+  @ViewChild('pipelineContainer', { static: false }) pipelineContainerRef?: ElementRef<HTMLDivElement>; // New
 
   constructor(private persistenceService: PersistenceService) {}
 
@@ -158,11 +178,15 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     this.updateTopCores();
     this.recalculateBestCore();
 
-    for (let b = 0; b < 112; b++) {
+    // Dynamically adjust core list based on observed core IDs
+    this.cores = [];
+    for (let b = 0; b < 120; b++) { // Increased to 120 to cover >900 cores
       for (let s = 0; s < 8; s++) {
         this.cores.push({ big: b, small: s });
       }
     }
+    this.totalCores = this.cores.length; // Update totalCores dynamically
+    this.gridSize = Math.ceil(Math.sqrt(this.totalCores));
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl = `${protocol}://${window.location.host}/api/ws`;
@@ -211,11 +235,11 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
 
     this.patoshiChartData = {
       datasets: [{
-        label: 'Best Share per Core in Patoshi Ranges',
+        label: 'Patoshi Range Hits',
         data: [],
         backgroundColor: (context: any) => {
           const tracker = this.patoshiTrackers[context.dataIndex];
-          const range = this.patoshiRanges.find(r => tracker.rangeStart === r.start && tracker.rangeEnd === r.end);
+          const range = this.patoshiRanges.find(r => tracker?.rangeStart === r.start && tracker?.rangeEnd === r.end);
           return range ? range.color : '#FF6384';
         },
         borderColor: '#FF6384',
@@ -227,23 +251,60 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        x: { title: { display: true, text: 'Core ID' }, type: 'category' },
-        y: { 
-          title: { display: true, text: 'Nonce Value' },
-          ticks: { callback: (value: number) => `${(value / 1e6).toFixed(1)}M` }
+        x: {
+          type: 'linear', // Changed to linear for core index
+          title: { display: true, text: 'Core Index' },
+          min: 0,
+          max: this.totalCores - 1,
+          ticks: {
+            stepSize: 50, // Show every 50th core index for readability
+            callback: (value: number) => {
+              const core = this.cores[value];
+              return core ? `${core.big}/${core.small}` : value;
+            }
+          }
+        },
+        y: {
+          type: 'linear', // Numeric y-axis for range index
+          title: { display: true, text: 'Patoshi Range' },
+          min: 0,
+          max: this.patoshiRanges.length - 1,
+          ticks: {
+            stepSize: 1,
+            callback: (value: number) => this.patoshiRanges[value]?.label || value
+          }
         }
       },
       plugins: {
+        zoom: {
+          pan: {
+            enabled: true,
+            mode: 'x' // Allow horizontal panning
+          },
+          zoom: {
+            wheel: {
+              enabled: true // Enable zoom with mouse wheel
+            },
+            pinch: {
+              enabled: true // Enable pinch zoom on touch devices
+            },
+            mode: 'x' // Zoom only on x-axis
+          }
+        },
         tooltip: {
           callbacks: {
             label: (context: any) => {
               const tracker = this.patoshiTrackers[context.dataIndex];
-              return `Core: ${tracker.coreId}, Nonce: ${tracker.bestNonce}, Range: ${tracker.rangeStart}-${tracker.rangeEnd}`;
+              const core = this.cores[tracker.coreIndex];
+              const range = this.patoshiRanges[tracker.rangeIndex];
+              return tracker ? `Core: ${core.big}/${core.small}, Range: ${range.label}, Nonce: ${tracker.bestNonce}` : '';
             }
           }
         }
       }
     };
+
+    console.log('Patoshi chart initialized with data:', this.patoshiChartData);
   }
 
   ngOnDestroy(): void {
@@ -252,23 +313,50 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
     this.persistenceService.saveMiningTasks(this.miningTasks, this.highestDiffTask);
   }
 
-  startResize(event: MouseEvent): void {
+  startResize(event: MouseEvent, section: string): void {
     this.isResizing = true;
+    this.resizingSection = section;
     event.preventDefault();
   }
 
   @HostListener('document:mousemove', ['$event'])
   onMouseMove(event: MouseEvent): void {
-    if (this.isResizing && this.patoshiTrackerRef) {
-      const trackerElement = this.patoshiTrackerRef.nativeElement;
-      const newHeight = event.clientY - trackerElement.getBoundingClientRect().top;
-      this.trackerHeight = Math.max(100, Math.min(600, newHeight));
+    if (!this.isResizing || !this.resizingSection) return;
+
+    let ref: ElementRef<HTMLDivElement> | undefined;
+    let heightProp: 'trackerHeight' | 'matrixHeight' | 'bestCoreLogsHeight' | 'pipelineHeight';
+
+    switch (this.resizingSection) {
+      case 'patoshi':
+        ref = this.patoshiTrackerRef;
+        heightProp = 'trackerHeight';
+        break;
+      case 'matrix':
+        ref = this.scrollContainer;
+        heightProp = 'matrixHeight';
+        break;
+      case 'bestCoreLogs':
+        ref = this.bestCoreLogsRef;
+        heightProp = 'bestCoreLogsHeight';
+        break;
+      case 'pipeline':
+        ref = this.pipelineContainerRef;
+        heightProp = 'pipelineHeight';
+        break;
+      default:
+        return;
+    }
+
+    if (ref) {
+      const newHeight = event.clientY - ref.nativeElement.getBoundingClientRect().top;
+      this[heightProp] = Math.max(100, Math.min(600, newHeight));
     }
   }
 
   @HostListener('document:mouseup')
   onMouseUp(): void {
     this.isResizing = false;
+    this.resizingSection = null;
   }
 
   scaleTracker(delta: number): void {
@@ -283,9 +371,7 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   getFilteredTrackers(): PatoshiTracker[] {
     if (!this.selectedRange) return this.patoshiTrackers;
     const range = this.patoshiRanges.find(r => r.label === this.selectedRange);
-    return range 
-      ? this.patoshiTrackers.filter(t => t.rangeStart === range.start && t.rangeEnd === range.end)
-      : this.patoshiTrackers;
+    return range ? this.patoshiTrackers.filter(t => t.rangeStart === range.start && t.rangeEnd === range.end) : this.patoshiTrackers;
   }
 
   getTrackerBorderColor(tracker: PatoshiTracker): string {
@@ -362,36 +448,68 @@ export class MiningMatrixComponent implements OnInit, OnDestroy {
   }
 
   private updatePatoshiTracker(rawLine: string): void {
-    const patoshiMatch = /Patoshi hit: Core (\d+), Nonce (\d+), Range \[(\d+)-(\d+)\]/.exec(rawLine);
-    if (patoshiMatch) {
-      const coreId = `${patoshiMatch[1]}/0`;
-      const nonce = patoshiMatch[2];
-      const rangeStart = parseInt(patoshiMatch[3]);
-      const rangeEnd = parseInt(patoshiMatch[4]);
-      
+    const rangeMatch = /Range hit: Core (\d+), Nonce (\d+), Range (\d+) \[(\d+)-(\d+)\], Patoshi: (\d+)/.exec(rawLine);
+    if (rangeMatch) {
+      const coreBig = parseInt(rangeMatch[1]);
+      const nonce = rangeMatch[2];
+      const rangeIndex = parseInt(rangeMatch[3]);
+      const rangeStart = parseInt(rangeMatch[4]);
+      const rangeEnd = parseInt(rangeMatch[5]);
+      const isPatoshi = parseInt(rangeMatch[6]);
+      const coreId = `${coreBig}/0`;
+      const coreIndex = this.cores.findIndex(c => c.big === coreBig && c.small === 0);
+
+      if (coreIndex === -1) {
+        console.error(`Core ${coreId} not found in this.cores`);
+        return;
+      }
+
+      if (coreIndex >= this.totalCores) {
+        this.totalCores = coreIndex + 1;
+        this.patoshiChartOptions.scales.x.max = this.totalCores - 1;
+        console.log(`Adjusted totalCores to ${this.totalCores}`);
+      }
+
       const existing = this.patoshiTrackers.find(t => t.coreId === coreId);
       if (existing) {
         existing.bestNonce = nonce;
         existing.rangeStart = rangeStart;
         existing.rangeEnd = rangeEnd;
         existing.nonceCount++;
+        existing.rangeIndex = rangeIndex;
       } else {
         this.patoshiTrackers.push({
           coreId,
           bestNonce: nonce,
           rangeStart,
           rangeEnd,
-          nonceCount: 1
+          nonceCount: 1,
+          coreIndex,
+          rangeIndex
         });
       }
 
-      this.patoshiChartData.datasets[0].data = this.patoshiTrackers.map(t => ({
-        x: t.coreId,
-        y: parseInt(t.bestNonce)
+      const updatedData = this.patoshiTrackers.map(t => ({
+        x: t.coreIndex,
+        y: t.rangeIndex
       }));
+
+      this.patoshiChartData = {
+        datasets: [{
+          label: 'Range Hits',
+          data: updatedData,
+          backgroundColor: (context: any) => {
+            const tracker = this.patoshiTrackers[context.dataIndex];
+            const range = this.patoshiRanges.find(r => tracker?.rangeStart === r.start && tracker?.rangeEnd === r.end);
+            return range ? range.color : '#FF6384';
+          },
+          borderColor: '#FF6384',
+          pointRadius: 5
+        }]
+      };
     }
   }
-
+  
   private updateMiningTasks(parsed: ParsedLine): void {
     if (parsed.category === 'jobInfo') {
       this.lastJob = { jobId: parsed.jobId, version: parsed.version, coreId: parsed.core };
