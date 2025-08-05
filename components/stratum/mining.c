@@ -1,229 +1,351 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <stdlib.h>
+#include <time.h>
 #include "mining.h"
 #include "utils.h"
 #include "mbedtls/sha256.h"
 
-// Developer Notes:
-// This function frees the memory allocated for a bm_job structure, which represents a mining job sent to the ASIC.
-// The bm_job structure contains dynamically allocated fields (jobid and extranonce2) that must be individually freed
-// before releasing the structure itself. This is essential for preventing memory leaks, as bm_jobs are created and
-// destroyed frequently during mining operations when new work arrives from the Stratum pool or old jobs are completed.
-// The function assumes the job pointer and its fields were properly allocated (e.g., by construct_bm_job or similar)
-// and is typically called when a job is no longer needed, such as after submission or when replacing it with new work
-// in the GlobalState tracking system.
-void free_bm_job(bm_job *job)
-{
-    free(job->jobid);
-    free(job->extranonce2);
-    free(job);
+// ================================================================================================
+// CONSTANTS AND GLOBAL TRACKING VARIABLES
+// ================================================================================================
+
+// Bitcoin's difficulty-1 target value - used to calculate share difficulty
+// This represents the maximum target value (easiest difficulty)
+static const double truediffone = 26959535291011309493156476344723991336010898738574164086137773096960.0;
+
+// Global variables to track the best share found during mining session
+static double best_diff = 0.0;           // Highest difficulty share found
+static uint32_t best_nonce = 0;          // Nonce that produced the best share
+static uint32_t best_version = 0;        // Block version used for best share
+static uint32_t best_extranonce2 = 0;    // Extra nonce 2 value for best share
+
+// ================================================================================================
+// LOGGING AND PERFORMANCE TRACKING FUNCTIONS
+// ================================================================================================
+
+/**
+ * Display current best share statistics to console
+ * Used for monitoring mining performance and progress
+ */
+void log_best_share() {
+    printf("[BEST] Diff=%.2f Nonce=0x%08X Version=0x%08X ExtraNonce2=0x%08X\n",
+           best_diff, best_nonce, best_version, best_extranonce2);
 }
 
-// Developer Notes:
-// This function constructs a Coinbase transaction string by concatenating four hexadecimal components: coinbase_1
-// (prefix from the pool), extranonce (server-provided nonce), extranonce_2 (client-generated nonce), and coinbase_2
-// (suffix from the pool). It calculates the total length, allocates a buffer, and builds the string using strcpy and
-// strcat, ensuring a null-terminated result. The Coinbase transaction is a critical part of Bitcoin mining, as it’s
-// the input to the Merkle root calculation and includes the miner’s reward address and extra nonce space for uniqueness.
-// The function returns a dynamically allocated string that must be freed by the caller, typically after it’s used to
-// compute the Merkle root. It assumes all input strings are valid hex and properly null-terminated, making it a simple
-// but foundational step in preparing mining data.
+/**
+ * Log detailed information about a valid share found
+ * Includes difficulty, nonce, and full midstate hex dump for debugging
+ * 
+ * @param diff - Calculated difficulty of the share
+ * @param nonce - Nonce value that produced this share
+ * @param midstate - SHA256 midstate used (32 bytes)
+ * @param tag - Category tag for the log entry (e.g., "DIFF", "POOL")
+ */
+void log_share(double diff, uint32_t nonce, const uint8_t *midstate, const char *tag) {
+    printf("[%s] Valid Share Found: Diff=%.2f, Nonce=0x%08X\nMidstate: ", tag, diff, nonce);
+    // Print midstate as hex string for debugging/verification
+    for (int i = 0; i < 32; ++i) printf("%02x", midstate[i]);
+    printf("\n");
+}
+
+// ================================================================================================
+// MEMORY MANAGEMENT
+// ================================================================================================
+
+/**
+ * Properly deallocate memory used by a mining job structure
+ * Prevents memory leaks by freeing all dynamically allocated components
+ * 
+ * @param job - Pointer to the bm_job structure to be freed
+ */
+void free_bm_job(bm_job *job) {
+    free(job->jobid);       // Free job ID string
+    free(job->extranonce2); // Free extra nonce 2 string
+    free(job);              // Free the job structure itself
+}
+
+// ================================================================================================
+// COINBASE TRANSACTION CONSTRUCTION
+// ================================================================================================
+
+/**
+ * Construct complete coinbase transaction by concatenating all components
+ * The coinbase transaction is the first transaction in a block that pays the miner
+ * 
+ * Format: coinbase_1 + extranonce + extranonce_2 + coinbase_2
+ * 
+ * @param coinbase_1 - First part of coinbase transaction (from pool)
+ * @param coinbase_2 - Second part of coinbase transaction (from pool)
+ * @param extranonce - Pool's extra nonce for uniqueness
+ * @param extranonce_2 - Miner's extra nonce for local uniqueness
+ * @return Dynamically allocated complete coinbase transaction string
+ */
 char *construct_coinbase_tx(const char *coinbase_1, const char *coinbase_2,
-                            const char *extranonce, const char *extranonce_2)
-{
+                            const char *extranonce, const char *extranonce_2) {
+    // Calculate total length needed for concatenated string
     int coinbase_tx_len = strlen(coinbase_1) + strlen(coinbase_2) + strlen(extranonce) + strlen(extranonce_2) + 1;
-
+    
+    // Allocate memory and build the complete coinbase transaction
     char *coinbase_tx = malloc(coinbase_tx_len);
-    strcpy(coinbase_tx, coinbase_1);
-    strcat(coinbase_tx, extranonce);
-    strcat(coinbase_tx, extranonce_2);
-    strcat(coinbase_tx, coinbase_2);
-    coinbase_tx[coinbase_tx_len - 1] = '\0';
-
+    strcpy(coinbase_tx, coinbase_1);        // Start with first part
+    strcat(coinbase_tx, extranonce);        // Add pool's extra nonce
+    strcat(coinbase_tx, extranonce_2);      // Add miner's extra nonce
+    strcat(coinbase_tx, coinbase_2);        // End with second part
+    coinbase_tx[coinbase_tx_len - 1] = '\0'; // Ensure null termination
+    
     return coinbase_tx;
 }
 
-// Developer Notes:
-// This function calculates the Merkle root hash for a mining job by combining the Coinbase transaction with a series
-// of Merkle branches provided by the pool. It first converts the hex-encoded coinbase_tx to binary, computes its double
-// SHA-256 hash (a Bitcoin standard), and uses this as the initial root. It then iteratively concatenates each Merkle
-// branch (32-byte binary hash) with the current root, double-hashing the 64-byte result to produce a new root, repeating
-// for all branches. The final 32-byte binary hash is converted to a 64-character hex string (plus null terminator) and
-// returned. This Merkle root is a key component of the Bitcoin block header, linking the Coinbase transaction to the
-// rest of the block’s transactions. The function manages memory dynamically and assumes valid inputs, making it a core
-// piece of the mining process that connects pool data to ASIC-ready headers.
-char *calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches)
-{
+/**
+ * Calculate the merkle root hash from coinbase transaction and merkle branches
+ * The merkle root represents all transactions in the block as a single hash
+ * 
+ * Process:
+ * 1. Hash the coinbase transaction (double SHA256)
+ * 2. Combine with each merkle branch using double SHA256
+ * 3. Result is the merkle root that goes into the block header
+ * 
+ * @param coinbase_tx - Complete coinbase transaction (hex string)
+ * @param merkle_branches - Array of merkle branch hashes (32 bytes each)
+ * @param num_merkle_branches - Number of merkle branches to process
+ * @return Dynamically allocated merkle root hash (hex string)
+ */
+char *calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches) {
+    // Convert coinbase transaction from hex string to binary
     size_t coinbase_tx_bin_len = strlen(coinbase_tx) / 2;
     uint8_t *coinbase_tx_bin = malloc(coinbase_tx_bin_len);
     hex2bin(coinbase_tx, coinbase_tx_bin, coinbase_tx_bin_len);
 
-    uint8_t both_merkles[64];
+    // Start merkle tree calculation with coinbase transaction hash
+    uint8_t both_merkles[64];  // Buffer for combining two 32-byte hashes
     uint8_t *new_root = double_sha256_bin(coinbase_tx_bin, coinbase_tx_bin_len);
     free(coinbase_tx_bin);
-    memcpy(both_merkles, new_root, 32);
+    memcpy(both_merkles, new_root, 32);  // Copy initial hash to working buffer
     free(new_root);
-    for (int i = 0; i < num_merkle_branches; i++)
-    {
-        memcpy(both_merkles + 32, merkle_branches[i], 32);
-        uint8_t *new_root = double_sha256_bin(both_merkles, 64);
-        memcpy(both_merkles, new_root, 32);
+
+    // Iteratively combine with each merkle branch
+    for (int i = 0; i < num_merkle_branches; i++) {
+        memcpy(both_merkles + 32, merkle_branches[i], 32);  // Add next branch
+        uint8_t *new_root = double_sha256_bin(both_merkles, 64);  // Hash combined data
+        memcpy(both_merkles, new_root, 32);  // Update working hash
         free(new_root);
     }
 
-    char *merkle_root_hash = malloc(65);
+    // Convert final merkle root to hex string for return
+    char *merkle_root_hash = malloc(65);  // 32 bytes * 2 + null terminator
     bin2hex(both_merkles, 32, merkle_root_hash, 65);
     return merkle_root_hash;
 }
 
-// Developer Notes:
-// This function constructs a bm_job structure (ASIC-ready mining job) from a mining_notify structure (Stratum pool data)
-// and a precomputed Merkle root, optionally applying a version mask for rolling. It copies basic fields (version, target,
-// ntime, difficulty) directly, sets the starting nonce to 0, and converts hex strings (merkle_root, prev_block_hash) to
-// binary in both little-endian (for hashing) and big-endian (for ASIC packet) formats. It generates a midstate hash—a
-// partial SHA-256 of the first 64 bytes of the block header (version, prev_block_hash, part of merkle_root)—to optimize
-// ASIC computation. If a version_mask is provided, it creates up to four midstates by incrementing the version within
-// the mask, enhancing nonce space exploration. The resulting bm_job is tailored for the BM1366 ASIC, balancing pool data
-// with hardware-specific requirements, and is returned by value (caller must manage dynamic fields separately).
-bm_job construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask)
-{
-    bm_job new_job;
+// ================================================================================================
+// MINING JOB CONSTRUCTION AND OPTIMIZATION
+// ================================================================================================
 
+/**
+ * Convert mining notification parameters into optimized mining job structure
+ * This is the core function that prepares data for efficient mining operations
+ * 
+ * Key optimizations:
+ * - Pre-computes SHA256 midstates to avoid redundant hashing
+ * - Handles endianness conversions for different data formats
+ * - Supports version rolling for increased mining efficiency
+ * 
+ * @param params - Mining notification from pool (contains basic block data)
+ * @param merkle_root - Calculated merkle root hash (hex string)
+ * @param version_mask - Bitmask for version rolling (0 = disabled)
+ * @param difficulty - Pool difficulty setting
+ * @return Fully constructed and optimized mining job structure
+ */
+bm_job construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, const uint32_t difficulty) {
+    bm_job new_job;
+    
+    // Copy basic parameters from mining notification
     new_job.version = params->version;
-    new_job.starting_nonce = 0;
     new_job.target = params->target;
     new_job.ntime = params->ntime;
-    new_job.pool_diff = params->difficulty;
+    new_job.starting_nonce = 0;
+    new_job.pool_diff = difficulty;
 
+    // Convert merkle root to binary and handle endianness
     hex2bin(merkle_root, new_job.merkle_root, 32);
-
     swap_endian_words(merkle_root, new_job.merkle_root_be);
     reverse_bytes(new_job.merkle_root_be, 32);
 
+    // Convert previous block hash and handle endianness  
     swap_endian_words(params->prev_block_hash, new_job.prev_block_hash);
-
     hex2bin(params->prev_block_hash, new_job.prev_block_hash_be, 32);
     reverse_bytes(new_job.prev_block_hash_be, 32);
 
+    // *** MIDSTATE OPTIMIZATION ***
+    // Pre-compute SHA256 midstate for the first 64 bytes of block header
+    // This avoids repeating the same hash operations for every nonce test
     uint8_t midstate_data[64];
-    memcpy(midstate_data, &new_job.version, 4);
-    memcpy(midstate_data + 4, new_job.prev_block_hash, 32);
-    memcpy(midstate_data + 36, new_job.merkle_root, 28);
+    memcpy(midstate_data, &new_job.version, 4);           // Bytes 0-3: Version
+    memcpy(midstate_data + 4, new_job.prev_block_hash, 32); // Bytes 4-35: Previous block hash
+    memcpy(midstate_data + 36, new_job.merkle_root, 28);   // Bytes 36-63: First 28 bytes of merkle root
 
+    // Compute and store the midstate (partial SHA256 state)
     midstate_sha256_bin(midstate_data, 64, new_job.midstate);
-    reverse_bytes(new_job.midstate, 32);
+    reverse_bytes(new_job.midstate, 32);  // Reverse for hardware compatibility
 
-    if (version_mask != 0)
-    {
+    // *** VERSION ROLLING SUPPORT ***
+    // Generate additional midstates for different version values
+    // This allows mining multiple version variations in parallel
+    if (version_mask != 0) {
+        // Generate midstate for version + 1
         uint32_t rolled_version = increment_bitmask(new_job.version, version_mask);
         memcpy(midstate_data, &rolled_version, 4);
         midstate_sha256_bin(midstate_data, 64, new_job.midstate1);
         reverse_bytes(new_job.midstate1, 32);
 
+        // Generate midstate for version + 2
         rolled_version = increment_bitmask(rolled_version, version_mask);
         memcpy(midstate_data, &rolled_version, 4);
         midstate_sha256_bin(midstate_data, 64, new_job.midstate2);
         reverse_bytes(new_job.midstate2, 32);
 
+        // Generate midstate for version + 3
         rolled_version = increment_bitmask(rolled_version, version_mask);
         memcpy(midstate_data, &rolled_version, 4);
         midstate_sha256_bin(midstate_data, 64, new_job.midstate3);
         reverse_bytes(new_job.midstate3, 32);
-        new_job.num_midstates = 4;
-    }
-    else
-    {
-        new_job.num_midstates = 1;
+
+        new_job.num_midstates = 4;  // We have 4 midstates available
+    } else {
+        new_job.num_midstates = 1;  // Only base midstate available
     }
 
     return new_job;
 }
 
-// Developer Notes:
-// This function generates a hex-encoded extranonce_2 string of a specified length (in bytes) from a 32-bit integer value.
-// It allocates a buffer for the hex string (length * 2 + 1 for null terminator), initializes it with zeros, and converts
-// the binary extranonce_2 value to hex, right-aligning it in the buffer. If the requested length exceeds 4 bytes (the size
-// of the input integer), it pads the left side with zeros, ensuring the string meets the pool’s extranonce2_len requirement.
-// The extranonce_2 is a client-generated nonce suffix appended to the Coinbase transaction, providing additional nonce
-// space for mining. The returned string must be freed by the caller and is used in share submission to uniquely identify
-// the miner’s work.
-char *extranonce_2_generate(uint32_t extranonce_2, uint32_t length)
-{
+// ================================================================================================
+// UTILITY FUNCTIONS
+// ================================================================================================
+
+/**
+ * Generate extranonce2 string with proper formatting and padding
+ * Extranonce2 provides local uniqueness for each mining attempt
+ * 
+ * @param extranonce_2 - Integer value to convert
+ * @param length - Required byte length of output
+ * @return Dynamically allocated hex string with zero padding
+ */
+char *extranonce_2_generate(uint32_t extranonce_2, uint32_t length) {
+    // Allocate string buffer (2 hex chars per byte + null terminator)
     char *extranonce_2_str = malloc(length * 2 + 1);
+    
+    // Initialize with zeros for proper padding
     memset(extranonce_2_str, '0', length * 2);
     extranonce_2_str[length * 2] = '\0';
-    bin2hex((uint8_t *)&extranonce_2, sizeof(extranonce_2), extranonce_2_str, length * 2 + 1);
-    if (length > 4)
-    {
-        extranonce_2_str[8] = '0';
-    }
+    
+    // Convert binary value to hex string (overwrites trailing zeros)
+    bin2hex((uint8_t *)&extranonce_2, length, extranonce_2_str, length * 2 + 1);
+    
     return extranonce_2_str;
 }
 
-// Developer Notes:
-// Regarding `truediffone`: This static constant defines the Bitcoin difficulty 1 target as a double-precision floating-point
-// number (approximately 2.696e70). It represents the value 0x00000000FFFF0000... (32 bytes, with the first 4 bytes as 0x0000FFFF
-// and the rest zeros) when interpreted as a 256-bit little-endian integer. In Bitcoin mining, difficulty is calculated as
-// truediffone divided by the hash value of a block header (also as a 256-bit integer). This constant is used in test_nonce_value
-// to compute the difficulty of a mined share, providing a standardized reference for validating solutions against the pool’s
-// target. Its large magnitude reflects the vast nonce space and ensures precision in difficulty calculations.
-// 
-// This function tests a nonce value against a bm_job to calculate its difficulty, mimicking cgminer’s share validation
-// logic. It constructs an 80-byte Bitcoin block header from the job’s fields (rolled_version, prev_block_hash, merkle_root,
-// ntime, target, nonce), double-hashes it using SHA-256, and computes the difficulty as truediffone divided by the hash
-// value (converted to a double via le256todouble). The result indicates the share’s difficulty—higher values mean a better
-// solution, with 0 implying an invalid hash (though not explicitly checked here). This function is used to verify ASIC
-// results before submission, ensuring they meet the pool’s target, and could be optimized with midstate hashing (as noted
-// in the TODO) to match ASIC efficiency. It’s a critical validation step in the mining workflow.
-static const double truediffone = 26959535291011309493156476344723991336010898738574164086137773096960.0;
+// ================================================================================================
+// CORE MINING ALGORITHM - NONCE TESTING AND VALIDATION
+// ================================================================================================
 
-double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version)
-{
+/**
+ * Test a specific nonce value and calculate its difficulty
+ * This is the core mining function that validates potential solutions
+ * 
+ * Process:
+ * 1. Construct complete 80-byte block header with the nonce
+ * 2. Perform double SHA256 hash (Bitcoin's proof-of-work algorithm)
+ * 3. Convert hash result to difficulty value
+ * 4. Log and track valid shares (difficulty > 1.0)
+ * 
+ * @param job - Mining job containing all necessary data
+ * @param nonce - 32-bit nonce value to test
+ * @param rolled_version - Version value (may be rolled for version rolling)
+ * @return Calculated difficulty (>1.0 indicates valid share, higher = better)
+ */
+double test_nonce_value(const bm_job *job, const uint32_t nonce, const uint32_t rolled_version) {
     double d64, s64, ds;
-    unsigned char header[80];
+    unsigned char header[80];  // Bitcoin block header is exactly 80 bytes
 
-    memcpy(header, &rolled_version, 4);
-    memcpy(header + 4, job->prev_block_hash, 32);
-    memcpy(header + 36, job->merkle_root, 32);
-    memcpy(header + 68, &job->ntime, 4);
-    memcpy(header + 72, &job->target, 4);
-    memcpy(header + 76, &nonce, 4);
+    // *** CONSTRUCT BLOCK HEADER ***
+    // Bitcoin block header format (80 bytes total):
+    memcpy(header, &rolled_version, 4);           // Bytes 0-3: Block version
+    memcpy(header + 4, job->prev_block_hash, 32); // Bytes 4-35: Previous block hash
+    memcpy(header + 36, job->merkle_root, 32);    // Bytes 36-67: Merkle root hash
+    memcpy(header + 68, &job->ntime, 4);          // Bytes 68-71: Timestamp
+    memcpy(header + 72, &job->target, 4);         // Bytes 72-75: Difficulty target
+    memcpy(header + 76, &nonce, 4);               // Bytes 76-79: Nonce (what we're testing)
 
-    unsigned char hash_buffer[32];
-    unsigned char hash_result[32];
+    // *** BITCOIN PROOF-OF-WORK CALCULATION ***
+    // Bitcoin uses double SHA256 for proof-of-work
+    unsigned char hash_buffer[32];   // Buffer for first hash
+    unsigned char hash_result[32];   // Buffer for final hash
+    
+    mbedtls_sha256(header, 80, hash_buffer, 0);      // First SHA256
+    mbedtls_sha256(hash_buffer, 32, hash_result, 0); // Second SHA256
 
-    mbedtls_sha256(header, 80, hash_buffer, 0);
-    mbedtls_sha256(hash_buffer, 32, hash_result, 0);
+    // *** DIFFICULTY CALCULATION ***
+    // Difficulty = truediffone / hash_value
+    // Higher difficulty means smaller hash value (more leading zeros)
+    d64 = truediffone;                    // Maximum target (difficulty 1)
+    s64 = le256todouble(hash_result);     // Convert hash to double (little-endian)
+    ds = d64 / s64;                       // Calculate actual difficulty
 
-    d64 = truediffone;
-    s64 = le256todouble(hash_result);
-    ds = d64 / s64;
-
-    return ds;
+    // *** SHARE VALIDATION AND TRACKING ***
+    // Any difficulty > 1.0 is considered a valid share
+    if (ds > 1.0) {
+        log_share(ds, nonce, job->midstate, "DIFF");  // Log the valid share
+        
+        // Update best share tracking if this is better than previous best
+        if (ds > best_diff) {
+            best_diff = ds;
+            best_nonce = nonce;
+            best_version = rolled_version;
+            // Note: best_extranonce2 would need to be passed in to track properly
+        }
+    }
+    
+    return ds;  // Return calculated difficulty
 }
 
-// Developer Notes:
-// This function increments a 32-bit value (value) within a specified bitmask (mask), used for version rolling in Bitcoin
-// mining. Version rolling allows the miner to modify specific bits of the block header’s version field, effectively
-// expanding the nonce space without recomputing the full header hash. It adds the least significant masked bit’s value
-// to the masked portion of value, detects overflow beyond the mask, and recursively propagates carries to higher bits
-// if needed. If the mask is zero, it returns the original value unchanged. This utility is key for generating multiple
-// midstates in construct_bm_job, enabling the ASIC to explore a larger solution space efficiently, and is a clever
-// optimization borrowed from Bitcoin’s Stratum protocol extensions.
-uint32_t increment_bitmask(const uint32_t value, const uint32_t mask)
-{
+// ================================================================================================
+// VERSION ROLLING UTILITY
+// ================================================================================================
+
+/**
+ * Safely increment bits within a specified bitmask for version rolling
+ * Version rolling allows testing multiple block versions simultaneously
+ * 
+ * This function increments only the bits specified in the mask while preserving
+ * other bits, and handles carry propagation correctly across bit boundaries.
+ * 
+ * Example: If mask = 0x1FFF0000 (bits 16-28), this function will increment
+ * through all possible values in that range while leaving other bits unchanged.
+ * 
+ * @param value - Current value to increment
+ * @param mask - Bitmask specifying which bits can be modified
+ * @return New value with incremented bits within the mask
+ */
+uint32_t increment_bitmask(const uint32_t value, const uint32_t mask) {
+    // If no mask specified, return original value unchanged
     if (mask == 0)
         return value;
 
+    // Increment the least significant bit set in the mask
     uint32_t carry = (value & mask) + (mask & -mask);
+    
+    // Check for overflow outside the mask boundaries
     uint32_t overflow = carry & ~mask;
+    
+    // Combine unchanged bits with new incremented bits
     uint32_t new_value = (value & ~mask) | (carry & mask);
 
-    if (overflow > 0)
-    {
-        uint32_t carry_mask = (overflow << 1);
-        new_value = increment_bitmask(new_value, carry_mask);
+    // Handle carry propagation to higher bits if needed
+    if (overflow > 0) {
+        uint32_t carry_mask = (overflow << 1);  // Shift overflow to next bit position
+        new_value = increment_bitmask(new_value, carry_mask);  // Recursively handle carry
     }
 
     return new_value;
